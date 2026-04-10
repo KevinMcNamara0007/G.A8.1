@@ -1,0 +1,29 @@
+{
+  "test": "A8.1 seed variance scan",
+  "date": "2026-04-04",
+  "queries_per_seed": 500,
+  "n_shards": 1800,
+  "routing": "36x50 (entity_hash x action_cluster)",
+  "results": [
+    {"seed": 42,   "hit_at_1": 82.8, "hit_at_5": 95.6, "p50_ms": 0.92},
+    {"seed": 123,  "hit_at_1": 85.0, "hit_at_5": 96.8, "p50_ms": 0.90},
+    {"seed": 7,    "hit_at_1": 83.4, "hit_at_5": 96.4, "p50_ms": 0.91},
+    {"seed": 999,  "hit_at_1": 85.0, "hit_at_5": 96.6, "p50_ms": 0.93},
+    {"seed": 2024, "hit_at_1": 84.0, "hit_at_5": 96.8, "p50_ms": 0.92},
+    {"seed": 314,  "hit_at_1": 82.8, "hit_at_5": 94.2, "p50_ms": 0.93}
+  ],
+  "summary": {
+    "hit_at_1_mean": 83.8,
+    "hit_at_1_std": 1.0,
+    "hit_at_5_mean": 96.0,
+    "hit_at_5_std": 1.0,
+    "p50_ms_mean": 0.92,
+    "p50_ms_std": 0.01
+  },
+  "comparison_a7": {
+    "hit_at_1": 83.0,
+    "hit_at_5": 92.0,
+    "p50_ms": 6.7,
+    "schema": "822 hardcoded relations"
+  }
+}
