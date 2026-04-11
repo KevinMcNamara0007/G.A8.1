@@ -76,18 +76,29 @@ import sys
 import time
 from pathlib import Path
 
-# ── Paths ──────────────────────────────────────────────────────
-STAGED = "/Users/stark/Quantum_Computing_Lab/MjolnirPhotonics/product.edge.analyst.bsc/edge_service/staged"
-OUTPUT = "/Users/stark/Quantum_Computing_Lab/OUT"
-G_A81 = "/Users/stark/Quantum_Computing_Lab/G.A8.1"
-
-# ── Config ─────────────────────────────────────────────────────
-ENTITY_BUCKETS = 4
-N_CLUSTERS = 20       # 4 × 20 = 80 shards
-WAVES = 4             # 4 waves of 20 workers
-DIM = 16384
-K = 128
-CLUSTER_SAMPLE = 100000
+# ── Load config (reads from config.env / environment) ─────────
+G_A81 = str(Path(__file__).resolve().parent)
+sys.path.insert(0, G_A81)
+try:
+    from config import cfg
+    STAGED = cfg.SOURCE_PATH or "/Users/stark/Quantum_Computing_Lab/MjolnirPhotonics/product.edge.analyst.bsc/edge_service/staged"
+    OUTPUT = cfg.INDEX_PATH or "/Users/stark/Quantum_Computing_Lab/OUT"
+    ENTITY_BUCKETS = cfg.ENTITY_BUCKETS
+    N_CLUSTERS = cfg.ACTION_CLUSTERS
+    WAVES = cfg.WAVES
+    DIM = cfg.DIM
+    K = cfg.K
+    CLUSTER_SAMPLE = cfg.CLUSTER_SAMPLE
+except ImportError:
+    # Fallback defaults if config.py not importable
+    STAGED = "/Users/stark/Quantum_Computing_Lab/MjolnirPhotonics/product.edge.analyst.bsc/edge_service/staged"
+    OUTPUT = "/Users/stark/Quantum_Computing_Lab/OUT"
+    ENTITY_BUCKETS = 4
+    N_CLUSTERS = 20
+    WAVES = 4
+    DIM = 16384
+    K = 128
+    CLUSTER_SAMPLE = 100000
 
 
 def combine_jsonl():

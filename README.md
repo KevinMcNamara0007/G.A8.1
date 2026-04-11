@@ -613,6 +613,89 @@ A81_WEIGHT_PROXIMITY=10    # Adjacent term bonus
 
 # Gazetteer
 A81_GAZETTEER_BOOST=3.0    # IDF multiplier for domain terms
+
+# Paths
+A81_SOURCE_PATH=/path/to/staged    # Source data files/directory
+A81_INDEX_PATH=/path/to/encoded    # Target encoded output (read+write)
+A81_PRODUCT_DIR=/path/to/product   # Product directory containing hooks.py
+A81_MEDIA_DIR=                     # Media files (auto-detect if empty)
+A81_CLUSTERS_PATH=/path/to/clusters.json  # Cluster definitions
+```
+
+### Path Reference
+
+| Variable | Required For | Description |
+|---|---|---|
+| `A81_SOURCE_PATH` | encode | Where raw input files/directories live (JSONL, JSON, etc.) |
+| `A81_INDEX_PATH` | encode + query | Where the encoded holographic matrix is written and read |
+| `A81_PRODUCT_DIR` | query | Product directory containing `hooks.py` for query intelligence |
+| `A81_MEDIA_DIR` | encode (optional) | Where image/video files live. Empty = auto-detect from source parent |
+| `A81_GAZETTEER_PATH` | encode (optional) | Custom gazetteer JSON file. Empty = use product gazetteer |
+| `A81_CLUSTERS_PATH` | encode | Cluster definitions from `discover_clusters.py` |
+
+### Configuration Examples
+
+**Default (uses paths from config.env):**
+
+```bash
+source config.env
+python3 encode_edge.py
+```
+
+**Override specific paths for a deployment:**
+
+```bash
+A81_SOURCE_PATH=/data/raw_messages \
+A81_INDEX_PATH=/data/encoded \
+A81_PRODUCT_DIR=/opt/edge_analyst \
+python3 encode_edge.py
+```
+
+**Multiple environments via separate config files:**
+
+```bash
+# config.dev.env
+A81_SOURCE_PATH=/Users/me/test_data
+A81_INDEX_PATH=/Users/me/test_encoded
+A81_ENTITY_BUCKETS=2
+A81_ACTION_CLUSTERS=10
+
+# config.prod.env
+A81_SOURCE_PATH=/data/production/raw
+A81_INDEX_PATH=/data/production/encoded
+A81_ENTITY_BUCKETS=8
+A81_ACTION_CLUSTERS=40
+
+# Use one or the other
+source config.dev.env && python3 encode_edge.py
+source config.prod.env && python3 encode_edge.py
+```
+
+**Container deployment (docker, kubernetes):**
+
+```yaml
+# docker-compose.yml
+services:
+  a81-encoder:
+    image: ga81:latest
+    environment:
+      A81_SOURCE_PATH: /data/raw
+      A81_INDEX_PATH: /data/encoded
+      A81_PRODUCT_DIR: /app/product
+      A81_DIM: 16384
+      A81_ENTITY_BUCKETS: 8
+      A81_ACTION_CLUSTERS: 40
+    volumes:
+      - ./raw:/data/raw:ro
+      - ./encoded:/data/encoded
+      - ./product:/app/product:ro
+```
+
+**Inline override (one-shot encode):**
+
+```bash
+A81_SOURCE_PATH=/tmp/new_data A81_INDEX_PATH=/tmp/test_encoded \
+  python3 encode/encode.py --clusters /tmp/clusters.json
 ```
 
 ## Deployment

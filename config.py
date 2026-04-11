@@ -77,10 +77,12 @@ class Config:
     ATTENTION_MIN_SCORE: float = _env("A81_ATTENTION_MIN_SCORE", 0.0, float)
 
     # ── Paths ────────────────────────────────────────────
+    SOURCE_PATH:    str = _env("A81_SOURCE_PATH", "")
     INDEX_PATH:     str = _env("A81_INDEX_PATH", "")
     PRODUCT_DIR:    str = _env("A81_PRODUCT_DIR", "")
     MEDIA_DIR:      str = _env("A81_MEDIA_DIR", "")
     GAZETTEER_PATH: str = _env("A81_GAZETTEER_PATH", "")
+    CLUSTERS_PATH:  str = _env("A81_CLUSTERS_PATH", "")
 
     @property
     def N_SHARDS(self) -> int:
