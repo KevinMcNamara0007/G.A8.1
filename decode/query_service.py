@@ -74,6 +74,7 @@ def _tokenize_query(text: str) -> list:
 class ShardData:
     """Pre-loaded shard: C++ index + sidecar metadata arrays."""
     __slots__ = ("shard_id", "index", "lsh", "media_index",
+                 "sidecar",
                  "texts", "authors", "tags", "channels", "timestamps",
                  "media_paths", "urls", "values")
 
@@ -97,20 +98,26 @@ class ShardData:
         media_idx_path = shard_dir / "index" / "media_index.npz"
         self.media_index = self._load_compact_index(media_idx_path, dim) if media_idx_path.exists() else None
 
-        # ── Sidecar metadata (hidden) ────────────────────────
-        meta_dir = shard_dir / "meta"
-        if not meta_dir.exists():
-            meta_dir = shard_dir  # backward compat: texts.json at root
-
-        self.texts = self._load_json(meta_dir / "texts.json",
-                                     shard_dir / "texts.json")
-        self.authors = self._load_json(meta_dir / "authors.json")
-        self.tags = self._load_json(meta_dir / "tags.json")
-        self.channels = self._load_json(meta_dir / "channels.json")
-        self.timestamps = self._load_json(meta_dir / "timestamps.json")
-        self.media_paths = self._load_json(meta_dir / "media_paths.json")
-        self.urls = self._load_json(meta_dir / "urls.json")
-        self.values = self._load_json(meta_dir / "values.json")
+        # ── Sidecar metadata ─────────────────────────────────
+        from sidecar_utils import ShardSidecar
+        self.sidecar = ShardSidecar.open_dir(shard_dir)
+        if self.sidecar is not None:
+            self.texts = self.authors = self.tags = None
+            self.channels = self.timestamps = None
+            self.media_paths = self.urls = self.values = None
+        else:
+            meta_dir = shard_dir / "meta"
+            if not meta_dir.exists():
+                meta_dir = shard_dir
+            self.texts = self._load_json(meta_dir / "texts.json",
+                                         shard_dir / "texts.json")
+            self.authors = self._load_json(meta_dir / "authors.json")
+            self.tags = self._load_json(meta_dir / "tags.json")
+            self.channels = self._load_json(meta_dir / "channels.json")
+            self.timestamps = self._load_json(meta_dir / "timestamps.json")
+            self.media_paths = self._load_json(meta_dir / "media_paths.json")
+            self.urls = self._load_json(meta_dir / "urls.json")
+            self.values = self._load_json(meta_dir / "values.json")
 
     @staticmethod
     def _load_json(*paths) -> list:
@@ -177,10 +184,40 @@ class ShardData:
         lsh.deserialize(lsh_data)
         return lsh
 
+    @staticmethod
+    def _ms_to_iso(ms: int) -> str:
+        """Epoch milliseconds → ISO-8601 UTC string for downstream compat."""
+        from sidecar_utils import ms_to_iso
+        return ms_to_iso(ms)
+
     def get_metadata(self, vec_id: int) -> dict:
         """O(1) sidecar lookup by vector ID. Returns original record fields."""
+        if self.sidecar is not None:
+            sc = self.sidecar
+            n = sc.n_vectors()
+            if vec_id >= n:
+                return {k: "" for k in (
+                    "message_text_translated", "message_text", "author",
+                    "channel", "tags", "filtered_tags", "posted_at",
+                    "media_path", "url", "text", "value", "timestamp")}
+            tags = sc.tags(vec_id)
+            ts_iso = self._ms_to_iso(sc.timestamp(vec_id))
+            return {
+                "message_text_translated": sc.text(vec_id),
+                "message_text": sc.value(vec_id),
+                "author": sc.author(vec_id),
+                "channel": sc.channel(vec_id),
+                "tags": tags,
+                "filtered_tags": tags,
+                "posted_at": ts_iso,
+                "media_path": sc.media_path(vec_id),
+                "url": sc.url(vec_id),
+                "text": sc.text(vec_id),
+                "value": sc.value(vec_id),
+                "timestamp": ts_iso,
+            }
+
         raw_tags = self.tags[vec_id] if vec_id < len(self.tags) else "[]"
-        # Tags stored as JSON string — parse to list
         if isinstance(raw_tags, str):
             try:
                 tags = json.loads(raw_tags)
@@ -199,7 +236,6 @@ class ShardData:
             "posted_at": self.timestamps[vec_id] if vec_id < len(self.timestamps) else "",
             "media_path": self.media_paths[vec_id] if vec_id < len(self.media_paths) else "",
             "url": self.urls[vec_id] if vec_id < len(self.urls) else "",
-            # Legacy compat fields
             "text": self.texts[vec_id] if vec_id < len(self.texts) else "",
             "value": self.values[vec_id] if vec_id < len(self.values) else "",
             "timestamp": self.timestamps[vec_id] if vec_id < len(self.timestamps) else "",

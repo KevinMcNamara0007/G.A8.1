@@ -74,6 +74,13 @@ for _d in (1, 2, 3, 4):
         break
 import ehc
 
+# ── Sidecar utils ──────────────────────────────────────────
+_ga81_root = str(Path(__file__).resolve().parent.parent)
+if _ga81_root not in sys.path:
+    sys.path.insert(0, _ga81_root)
+from sidecar_utils import (iso_to_ms, write_manifest, read_manifest,
+                           next_delta_name, should_compact, compact_sidecar)
+
 # ── Config ──────────────────────────────────────────────────
 try:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -417,17 +424,56 @@ class IncrementalIngest:
             del idx, lsh, data, lsh_data, lsh_arrays
             gc.collect()
 
-            # ── Save sidecar ──────────────────────────────────
+            # ── Save sidecar delta (EHS1) ────────────────────
+            delta_name = next_delta_name(shard_dir)
+            delta_path = shard_dir / delta_name
+            writer = ehc.SidecarWriter(str(delta_path))
+            for sc in sidecars:
+                raw_tags = sc["tags"]
+                tags_list = json.loads(raw_tags) if isinstance(raw_tags, str) and raw_tags else (raw_tags if isinstance(raw_tags, list) else [])
+                writer.append(
+                    text=sc["text"],
+                    author=sc["author"],
+                    channel=sc["channel"],
+                    url=sc["url"],
+                    media_path=sc["media_path"],
+                    value=sc["value"],
+                    tags=tags_list,
+                    timestamp=iso_to_ms(sc["timestamp"]),
+                )
+            writer.finalize()
+
+            # Update manifest: append delta entry
+            manifest = read_manifest(shard_dir)
+            if manifest:
+                manifest["files"].append({"name": delta_name, "n_vectors": n_new})
+            else:
+                base_ehs = shard_dir / "sidecar.ehs"
+                files = []
+                if base_ehs.exists():
+                    base_store = ehc.SidecarStore.open(str(base_ehs))
+                    files.append({"name": "sidecar.ehs",
+                                  "n_vectors": base_store.n_vectors()})
+                files.append({"name": delta_name, "n_vectors": n_new})
+                manifest = {"files": files}
+            write_manifest(shard_dir, manifest["files"])
+
+            # Compact if deltas exceed 10% of base size
+            if should_compact(shard_dir):
+                cr = compact_sidecar(shard_dir)
+                if cr.get("compacted"):
+                    print(f"  [shard {shard_id:04d}] compacted "
+                          f"{cr['n_segments_merged']} segments in {cr['elapsed_s']}s")
+
+            # Backward compat: JSON sidecars
             meta_dir.mkdir(exist_ok=True)
-            with open(meta_dir / "texts.json", "w") as f: json.dump(texts, f)
-            with open(meta_dir / "authors.json", "w") as f: json.dump(authors, f)
-            with open(meta_dir / "channels.json", "w") as f: json.dump(channels, f)
-            with open(meta_dir / "tags.json", "w") as f: json.dump(tags, f)
-            with open(meta_dir / "timestamps.json", "w") as f: json.dump(timestamps, f)
-            with open(meta_dir / "media_paths.json", "w") as f: json.dump(media_paths, f)
-            with open(meta_dir / "urls.json", "w") as f: json.dump(urls, f)
-            with open(meta_dir / "values.json", "w") as f: json.dump(values, f)
-            # Backward compat
+            for name, arr in [("texts", texts), ("authors", authors),
+                              ("channels", channels), ("tags", tags),
+                              ("timestamps", timestamps),
+                              ("media_paths", media_paths),
+                              ("urls", urls), ("values", values)]:
+                with open(meta_dir / f"{name}.json", "w") as f:
+                    json.dump(arr, f)
             with open(shard_dir / "texts.json", "w") as f: json.dump(texts, f)
 
             # ── Update shard manifest ─────────────────────────

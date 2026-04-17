@@ -608,28 +608,41 @@ def worker_encode(args):
     del media_vecs
     gc.collect()
 
-    # ── Save HIDDEN sidecar metadata ─────────────────────────
+    # ── Save HIDDEN sidecar metadata (EHS1 binary format) ────
+    from pathlib import Path as _Path
+    _ga81 = _Path(__file__).resolve().parent.parent
+    if str(_ga81) not in sys.path:
+        sys.path.insert(0, str(_ga81))
+    from sidecar_utils import iso_to_ms, write_manifest
+
+    ehs_path = out / "sidecar.ehs"
+    writer = ehc.SidecarWriter(str(ehs_path))
+    for i in range(n_encoded):
+        raw_tags = sidecar_tags[i]
+        tags_list = json.loads(raw_tags) if raw_tags else []
+        writer.append(
+            text=sidecar_texts[i],
+            author=sidecar_authors[i],
+            channel=sidecar_channels[i],
+            url=sidecar_urls[i],
+            media_path=sidecar_media_paths[i],
+            value=sidecar_values[i],
+            tags=tags_list,
+            timestamp=iso_to_ms(sidecar_timestamps[i]),
+        )
+    writer.finalize()
+    write_manifest(out, [{"name": "sidecar.ehs", "n_vectors": n_encoded}])
+
+    # Backward compat: JSON sidecars (benchmarks + legacy tools)
     meta_dir = out / "meta"
     meta_dir.mkdir(exist_ok=True)
-
-    with open(meta_dir / "texts.json", "w") as f:
-        json.dump(sidecar_texts, f)
-    with open(meta_dir / "authors.json", "w") as f:
-        json.dump(sidecar_authors, f)
-    with open(meta_dir / "tags.json", "w") as f:
-        json.dump(sidecar_tags, f)
-    with open(meta_dir / "channels.json", "w") as f:
-        json.dump(sidecar_channels, f)
-    with open(meta_dir / "timestamps.json", "w") as f:
-        json.dump(sidecar_timestamps, f)
-    with open(meta_dir / "media_paths.json", "w") as f:
-        json.dump(sidecar_media_paths, f)
-    with open(meta_dir / "urls.json", "w") as f:
-        json.dump(sidecar_urls, f)
-    with open(meta_dir / "values.json", "w") as f:
-        json.dump(sidecar_values, f)
-
-    # Backward compat: texts.json at shard root (benchmark expects it)
+    for name, arr in [("texts", sidecar_texts), ("authors", sidecar_authors),
+                      ("tags", sidecar_tags), ("channels", sidecar_channels),
+                      ("timestamps", sidecar_timestamps),
+                      ("media_paths", sidecar_media_paths),
+                      ("urls", sidecar_urls), ("values", sidecar_values)]:
+        with open(meta_dir / f"{name}.json", "w") as f:
+            json.dump(arr, f)
     with open(out / "texts.json", "w") as f:
         json.dump(sidecar_texts, f)
 
