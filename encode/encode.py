@@ -683,9 +683,11 @@ def main():
     p.add_argument("--output", required=True)
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from config import cfg as _c
+        from config import cfg as _c, resolve_workers as _rw
         _dim, _k = _c.DIM, _c.K
-        _eb, _waves = _c.ENTITY_BUCKETS, _c.WAVES
+        _eb = _c.ENTITY_BUCKETS
+        # 0 or unset → cap at CPU_FRACTION * cores. Explicit WAVES wins.
+        _waves = _c.WAVES if _c.WAVES and _c.WAVES > 0 else _rw(0)
     except ImportError:
         _dim, _k, _eb, _waves = 16384, 128, 36, 9
     p.add_argument("--clusters", required=True, help="Path to clusters.json")

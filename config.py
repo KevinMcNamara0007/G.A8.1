@@ -76,6 +76,37 @@ class Config:
     ATTENTION_BETA:      float = _env("A81_ATTENTION_BETA", 1.5, float)
     ATTENTION_MIN_SCORE: float = _env("A81_ATTENTION_MIN_SCORE", 0.0, float)
 
+    # ── Closed-Loop Encode/Decode (v13, Closed_Loop_Encode_Decode_Plan) ──
+    # When CLOSED_LOOP_ENABLED is True, both encode and decode route tokens
+    # through canonical.CanonicalizationPipeline, and decode fans queries
+    # out along configured axes. Disabled by default — enabling requires
+    # re-encoding so shards carry symmetry_manifest.json.
+    CLOSED_LOOP_ENABLED:     bool = _env("A81_CLOSED_LOOP", False, bool)
+    CLOSED_LOOP_AXES:        str  = _env("A81_CLOSED_LOOP_AXES", "possessive,acronym")
+    CLOSED_LOOP_LOG_PATH:    str  = _env("A81_CLOSED_LOOP_LOG", "")
+    CLOSED_LOOP_WINDOW:      int  = _env("A81_CLOSED_LOOP_WINDOW", 100, int)
+    CLOSED_LOOP_STRICT:      bool = _env("A81_CLOSED_LOOP_STRICT", False, bool)
+
+    # ── Tier-Routed Encoding v13 (PlanB) ───────────────────
+    # When TIER_ROUTED_ENABLED is True, encode + decode dispatch through
+    # decode13/ tier router. Three-tier architecture; defaults to Tier 1
+    # pass-through for structured SRO inputs and Tier 2 extraction for
+    # free text. Disabled by default — enabling requires re-encoding so
+    # shards carry per-vector TierManifest records.
+    TIER_ROUTED_ENABLED: bool = _env("A81_TIER_ROUTED", False, bool)
+    TIER_GATE_MODE:      str  = _env("A81_TIER_GATE_MODE", "default")
+    TIER_TENANT_DOMAIN:  str  = _env("A81_TIER_TENANT", "default::default")
+    # Tier-2 primary extractor selector:
+    #   "rule_based" (default) | "t5" | "t5:google/flan-t5-large"
+    TIER_EXTRACTOR:      str  = _env("A81_TIER_EXTRACTOR", "rule_based")
+
+    # ── CPU / parallelism ────────────────────────────────
+    #   Fraction of hardware cores that the auto paths are allowed to
+    #   use. Leaves headroom for the main thread, GIL-holding Python,
+    #   and OS/IO. Only consulted when callers pass 0 / don't set
+    #   A81_WAVES explicitly — explicit values always win.
+    CPU_FRACTION:   float = _env("A81_CPU_FRACTION", 0.8, float)
+
     # ── Paths ────────────────────────────────────────────
     SOURCE_PATH:    str = _env("A81_SOURCE_PATH", "")
     INDEX_PATH:     str = _env("A81_INDEX_PATH", "")
@@ -100,3 +131,25 @@ class Config:
 
 # Singleton
 cfg = Config()
+
+
+def resolve_workers(requested: int = 0, *, minimum: int = 1) -> int:
+    """Resolve a worker / thread count.
+
+    If `requested` is positive, it wins (explicit override). Otherwise
+    return `floor(cpu_count * CPU_FRACTION)`, clamped to `minimum` or
+    above. Container-aware on Linux via `os.sched_getaffinity`; falls
+    back to `os.cpu_count()` on macOS / other platforms.
+
+    This is the single place in G.A8.1 that converts "0 means auto" to
+    an integer. Encode waves, ingest threads, and benchmark thread
+    flags all funnel through here so one env var (`A81_CPU_FRACTION`)
+    controls everything.
+    """
+    if requested and requested > 0:
+        return max(minimum, int(requested))
+    try:
+        cores = len(os.sched_getaffinity(0))  # respects cgroup / taskset on Linux
+    except (AttributeError, OSError):
+        cores = os.cpu_count() or minimum
+    return max(minimum, int(cores * max(cfg.CPU_FRACTION, 0.0)))

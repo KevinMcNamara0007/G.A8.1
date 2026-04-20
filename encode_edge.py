@@ -85,7 +85,9 @@ try:
     OUTPUT = cfg.INDEX_PATH or "/Users/stark/Quantum_Computing_Lab/OUT"
     ENTITY_BUCKETS = cfg.ENTITY_BUCKETS
     N_CLUSTERS = cfg.ACTION_CLUSTERS
-    WAVES = cfg.WAVES
+    # Explicit A81_WAVES wins; 0/unset → auto at CPU_FRACTION of cores.
+    from config import resolve_workers as _rw
+    WAVES = cfg.WAVES if cfg.WAVES and cfg.WAVES > 0 else _rw(0)
     DIM = cfg.DIM
     K = cfg.K
     CLUSTER_SAMPLE = cfg.CLUSTER_SAMPLE

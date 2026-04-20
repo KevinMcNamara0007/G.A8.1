@@ -318,18 +318,20 @@ def main():
                          "falls back to skipping persistence.")
     args = ap.parse_args()
 
-    # Resolve dim/k from config.env when not overridden on CLI.
-    if args.dim is None or args.k is None:
-        try:
-            sys.path.insert(0, str(_ROOT))
-            from config import cfg as _cfg  # noqa: E402
-            args.dim = args.dim if args.dim is not None else _cfg.DIM
-            args.k   = args.k   if args.k   is not None else _cfg.K
-        except Exception:
-            args.dim = args.dim or 16384
-            args.k   = args.k   or 128
+    # Resolve dim/k/threads from config.env when not overridden on CLI.
+    try:
+        sys.path.insert(0, str(_ROOT))
+        from config import cfg as _cfg, resolve_workers  # noqa: E402
+        args.dim = args.dim if args.dim is not None else _cfg.DIM
+        args.k   = args.k   if args.k   is not None else _cfg.K
+        args.threads = resolve_workers(args.threads)
+    except Exception:
+        args.dim = args.dim or 16384
+        args.k   = args.k   or 128
+        if args.threads <= 0:
+            args.threads = max(1, int((os.cpu_count() or 1) * 0.8))
     print(f"[config] dim={args.dim} k={args.k} hebbian={args.hebbian} "
-          f"threads={args.threads or 'auto'}")
+          f"threads={args.threads} (auto from A81_CPU_FRACTION if not --threads)")
 
     paths = [STAGED / "msgs.jsonl", STAGED / "data3" / "msgs.jsonl"]
     paths = [p for p in paths if p.exists()]
