@@ -50,13 +50,13 @@ class ExtractionPipeline:
       default    — role agreement w/ prefix tolerance (recommended)
       permissive — S, R match; O overlap ≥ 1 token
 
-    Primary extractor is pluggable:
+    Primary extractor is native-EHC-only (no T5, no BART, no REBEL):
       - "rule_based"  → RuleBasedFactSeparator (regex templates, default)
-      - "t5"          → T5FactSeparator (google/flan-t5-base; PlanB §6.1)
       - any object exposing .extract(sentence, anchor_subject=None) →
         List[ExtractedTriple]
 
     Choose via env var A81_TIER_EXTRACTOR or by passing `primary=` explicitly.
+    Legacy labels like "t5" / "bart" / "rebel" fall back to rule_based.
     """
 
     version = VERSION
@@ -168,42 +168,26 @@ class ExtractionPipeline:
 def _make_primary(name: Optional[str] = None):
     """Factory: build the encode-side primary extractor.
 
+    decode13 deliberately has no LLM-based extractors (no T5, no BART,
+    no REBEL). Tier 2 does its extraction work with native EHC VSA
+    primitives — tokenize → stem → role-bind → superpose — which gives
+    us contract symmetry between encode and decode by construction, zero
+    external-model dependencies, and ~1000× less memory than a transformer.
+
     Selection order:
       1. explicit `name` argument
       2. A81_TIER_EXTRACTOR env var
       3. default → "rule_based"
 
-    Supported names:
-      - "rule_based"    → RuleBasedFactSeparator (regex templates)
-      - "t5"            → T5FactSeparator with google/flan-t5-base
-      - "t5:<model>"    → T5FactSeparator with a specific HF model id,
-                          e.g. "t5:google/flan-t5-large"
-      - "bart" or "rebel"
-                        → REBELFactSeparator with Babelscape/rebel-large
-                          (purpose-built OpenIE, recommended for unstructured)
-      - "bart:<model>"  → REBELFactSeparator with a specific HF model id
+    The only supported name is "rule_based" (RuleBasedFactSeparator,
+    regex templates). Unknown labels fall back to rule_based with a
+    warning so older config files don't crash benchmarks.
     """
     import os
-    chosen = name or os.environ.get("A81_TIER_EXTRACTOR", "rule_based")
-    chosen = chosen.strip()
-    if chosen == "rule_based" or not chosen:
-        return RuleBasedFactSeparator()
-    if chosen.startswith("t5"):
-        from .extractors_t5 import T5FactSeparator, DEFAULT_MODEL
-        if ":" in chosen:
-            _, model_name = chosen.split(":", 1)
-        else:
-            model_name = DEFAULT_MODEL
-        return T5FactSeparator(model_name=model_name)
-    if chosen.startswith(("bart", "rebel")):
-        from .extractors_bart import REBELFactSeparator, DEFAULT_MODEL
-        if ":" in chosen:
-            _, model_name = chosen.split(":", 1)
-        else:
-            model_name = DEFAULT_MODEL
-        return REBELFactSeparator(model_name=model_name)
-    # Unknown label → fall back with a warning so benchmarks don't crash
-    import sys
-    print(f"[ExtractionPipeline] unknown primary extractor {chosen!r}; "
-          f"falling back to rule_based", file=sys.stderr)
+    chosen = (name or os.environ.get("A81_TIER_EXTRACTOR", "rule_based")).strip()
+    if chosen and chosen != "rule_based":
+        import sys
+        print(f"[ExtractionPipeline] extractor {chosen!r} is not supported "
+              f"(native-EHC-only). Falling back to rule_based.",
+              file=sys.stderr)
     return RuleBasedFactSeparator()

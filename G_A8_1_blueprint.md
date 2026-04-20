@@ -1006,6 +1006,58 @@ Run order:
 
 ---
 
+## Tier 2 Extraction — Native EHC Only
+
+Tier 2 (extracted-triple / unstructured text) is done entirely with
+native EHC primitives. There are no transformers in the decode path:
+no T5, no BART, no REBEL, no sentence encoders, no LLM fallbacks.
+
+```
+text → TextNormalizer → PorterStemmer → role-bind (slot + bigram + KV)
+     → superpose (BSC) → index
+```
+
+All of the above runs in C++ inside `ehc::pipeline::StructuralPipelineV13`.
+Python only marshals config and batches. The encode-side and decode-side
+import the same `build_structural_config(...)` factory and call the same
+C++ `encode()`, so the vector produced when indexing a document is byte-
+identical (given the same config) to the vector produced when querying
+its first sentence.
+
+### Why this is a stronger story than the original PlanB draft
+
+| Concern | Transformer extractor (T5/BART) | Native EHC |
+|---|---|---|
+| Encode/decode contract | Two separate models, version drift risk | Identical C++ call on both sides |
+| External deps | PyTorch + HF models (GB per variant) | None beyond EHC |
+| Per-doc latency at ingest | seconds on CPU | sub-millisecond |
+| Memory footprint | multi-GB model weights | ~0 (weights are in the sparse codebook) |
+| Multi-tenant isolation | shared weights, risky | `tenant_offset` shifts role seeds, near-orthogonal by construction |
+| Reproducibility | depends on model cache | fully deterministic from seed |
+
+### What was explicitly removed
+
+- `decode13/extractors_t5.py` — deleted.
+- `decode13/extractors_bart.py` — deleted.
+- `ExtractionPipeline._make_primary` no longer branches on `t5` / `bart` /
+  `rebel`. `A81_TIER_EXTRACTOR=rule_based` is the only supported value.
+  Unknown labels fall back to `rule_based` with a warning — no
+  transformer fallback is ever loaded.
+
+### How Tier 3 recovers what extraction can't
+
+The one thing a transformer would nominally give us — semantic
+generalization over surface-form variation — is recovered at query time
+by the Hebbian co-occurrence layer (Tier 3). Learned entirely from the
+corpus, no external knowledge base. When the encode pipeline has
+`enable_hebbian=True`, the decode-side `query_text_expanded` pulls in
+the top-k co-occurring tokens for each query token and adds their
+role-bound vectors to the query superposition, recovering ~2pp recall
+and ~7pp MRR on the edge benchmark at 220K docs without any LLM in the
+loop.
+
+---
+
 ## The Theoretical Claim
 
 > **G.A8.1 achieves A7-level query latency (sub-5ms) without A7's schema dependency
