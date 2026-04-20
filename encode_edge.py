@@ -299,56 +299,27 @@ def run_encode(combined_path):
 
 
 def run_benchmark():
-    """Run benchmark against encoded output."""
-    sys.path.insert(0, os.path.join(G_A81, "decode"))
+    """Benchmarking has moved to the decode13 eval script.
 
-    from benchmark import sample_queries, run_benchmark as a81_benchmark
-    from benchmark import load_index, _load_lsh_from_npz
-    import math
+    The legacy `decode/benchmark` module was removed when decode13 became
+    the sole production decoder. Benchmark the encoded shards with:
 
+        python3 -m decode13.benchmark.run_production \
+            --run-dir "$A81_INDEX_PATH" --dim $A81_DIM --k $A81_K
+
+    or for the structural-pipeline (non-sharded) path:
+
+        python3 decode13/eval/run_edge_benchmark.py \
+            --out "$A81_INDEX_PATH" --hebbian --threads 0
+    """
     print("\n" + "=" * 60)
-    print("  Step 3: Benchmark")
+    print("  Step 3: Benchmark — deferred to decode13 eval")
     print("=" * 60)
-
-    import ehc
-
-    run_dir = Path(OUTPUT)
-    dim = DIM
-
-    # Load centroids
-    with open(run_dir / "centroids.json") as f:
-        centroids_raw = json.load(f)
-    centroids = []
-    for cd in centroids_raw:
-        cd["_vec"] = ehc.SparseVector(
-            dim,
-            [int(x) for x in cd["indices"]],
-            [int(x) for x in cd["signs"]],
-        )
-        centroids.append(cd)
-    print(f"  Centroids: {len(centroids)}")
-
-    # Shared codebook
-    cfg = ehc.CodebookConfig()
-    cfg.dim = dim
-    cfg.k = int(math.sqrt(dim))
-    cfg.seed = 42
-    shared_cb = ehc.TokenCodebook(cfg)
-    shared_cb.build_from_vocabulary([])
-
-    # Sample and run
-    queries = sample_queries(str(run_dir), 500, seed=42)
-    scorecard = a81_benchmark(
-        queries, str(run_dir), centroids, shared_cb,
-        top_k=10, final_k=5, dim=dim,
-        n_entity_buckets=ENTITY_BUCKETS, n_action_clusters=N_CLUSTERS,
-    )
-
-    out_path = run_dir / "edge_scorecard.json"
-    with open(out_path, "w") as f:
-        json.dump(scorecard, f, indent=2)
-    print(f"  Scorecard: {out_path}")
-    return scorecard
+    print(f"  Output: {OUTPUT}")
+    print("  Run:")
+    print(f"    python3 -m decode13.benchmark.run_production "
+          f"--run-dir {OUTPUT} --dim {DIM} --k {K}")
+    return None
 
 
 def main():

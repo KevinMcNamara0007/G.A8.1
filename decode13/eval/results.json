@@ -1,0 +1,1254 @@
+{
+  "tweets": 200,
+  "queries": 15,
+  "results": [
+    {
+      "encoder": "B1_bag_shatter",
+      "ingest_total_ms": 6.38,
+      "ingest_ms_per_doc": 0.032,
+      "query_p50_ms": 0.29,
+      "query_mean_ms": 0.292,
+      "recall@10_mean": 0.2805,
+      "mrr_mean": 0.5556,
+      "ndcg@10_mean": 0.3116,
+      "per_query": [
+        {
+          "qid": 0,
+          "text": "Iran protests violence",
+          "gold_count": 12,
+          "retrieved": [
+            7,
+            84,
+            73,
+            194,
+            135,
+            5,
+            120,
+            56,
+            162,
+            44
+          ],
+          "recall@10": 0.3,
+          "mrr": 1.0,
+          "ndcg@10": 0.3932783996463063
+        },
+        {
+          "qid": 1,
+          "text": "Khamenei supreme leader",
+          "gold_count": 6,
+          "retrieved": [
+            132,
+            18,
+            197,
+            15,
+            115,
+            177,
+            17,
+            27,
+            112,
+            136
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 0.5,
+          "ndcg@10": 0.3422220729283414
+        },
+        {
+          "qid": 2,
+          "text": "Hezbollah statement warning",
+          "gold_count": 3,
+          "retrieved": [
+            165,
+            59,
+            38,
+            43,
+            160,
+            104,
+            33,
+            84,
+            192,
+            45
+          ],
+          "recall@10": 0.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0
+        },
+        {
+          "qid": 3,
+          "text": "Israeli Mossad operations",
+          "gold_count": 11,
+          "retrieved": [
+            24,
+            25,
+            144,
+            138,
+            97,
+            160,
+            82,
+            51,
+            118,
+            139
+          ],
+          "recall@10": 0.6,
+          "mrr": 1.0,
+          "ndcg@10": 0.7125523635307982
+        },
+        {
+          "qid": 4,
+          "text": "Trump statement on Iran",
+          "gold_count": 34,
+          "retrieved": [
+            7,
+            73,
+            194,
+            5,
+            120,
+            104,
+            3,
+            44,
+            53,
+            135
+          ],
+          "recall@10": 0.3,
+          "mrr": 0.5,
+          "ndcg@10": 0.2999050316974944
+        },
+        {
+          "qid": 5,
+          "text": "missile strike attack",
+          "gold_count": 2,
+          "retrieved": [
+            69,
+            121,
+            15,
+            70,
+            78,
+            94,
+            168,
+            179,
+            194,
+            91
+          ],
+          "recall@10": 0.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0
+        },
+        {
+          "qid": 6,
+          "text": "Tehran city events",
+          "gold_count": 11,
+          "retrieved": [
+            62,
+            72,
+            94,
+            118,
+            23,
+            172,
+            37,
+            120,
+            103,
+            132
+          ],
+          "recall@10": 0.3,
+          "mrr": 1.0,
+          "ndcg@10": 0.41528076708874123
+        },
+        {
+          "qid": 7,
+          "text": "Revolutionary Guard IRGC",
+          "gold_count": 3,
+          "retrieved": [
+            80,
+            81,
+            14,
+            83,
+            82,
+            194,
+            102,
+            139,
+            88,
+            107
+          ],
+          "recall@10": 0.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0
+        },
+        {
+          "qid": 8,
+          "text": "Iranian Foreign Minister",
+          "gold_count": 7,
+          "retrieved": [
+            180,
+            198,
+            12,
+            28,
+            27,
+            197,
+            93,
+            76,
+            18,
+            80
+          ],
+          "recall@10": 0.42857142857142855,
+          "mrr": 0.5,
+          "ndcg@10": 0.3981471309738322
+        },
+        {
+          "qid": 9,
+          "text": "regime change",
+          "gold_count": 10,
+          "retrieved": [
+            77,
+            57,
+            35,
+            41,
+            68,
+            55,
+            42,
+            60,
+            196,
+            81
+          ],
+          "recall@10": 0.1,
+          "mrr": 0.3333333333333333,
+          "ndcg@10": 0.11004588314904008
+        },
+        {
+          "qid": 10,
+          "text": "Netanyahu Israel",
+          "gold_count": 3,
+          "retrieved": [
+            86,
+            36,
+            163,
+            67,
+            168,
+            133,
+            58,
+            170,
+            130,
+            132
+          ],
+          "recall@10": 0.6666666666666666,
+          "mrr": 0.5,
+          "ndcg@10": 0.4441228664487979
+        },
+        {
+          "qid": 11,
+          "text": "Larijani Iran politics",
+          "gold_count": 3,
+          "retrieved": [
+            7,
+            73,
+            120,
+            194,
+            5,
+            135,
+            85,
+            44,
+            104,
+            69
+          ],
+          "recall@10": 0.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0
+        },
+        {
+          "qid": 12,
+          "text": "Kurdish forces",
+          "gold_count": 2,
+          "retrieved": [
+            11,
+            93,
+            29,
+            5,
+            59,
+            49,
+            48,
+            65,
+            91,
+            156
+          ],
+          "recall@10": 0.5,
+          "mrr": 1.0,
+          "ndcg@10": 0.6131471927654584
+        },
+        {
+          "qid": 13,
+          "text": "Ali Khamenei statement",
+          "gold_count": 4,
+          "retrieved": [
+            18,
+            38,
+            90,
+            17,
+            33,
+            165,
+            164,
+            43,
+            61,
+            135
+          ],
+          "recall@10": 0.25,
+          "mrr": 1.0,
+          "ndcg@10": 0.3903800499921017
+        },
+        {
+          "qid": 14,
+          "text": "Lebanon border",
+          "gold_count": 7,
+          "retrieved": [
+            28,
+            27,
+            51,
+            196,
+            83,
+            73,
+            121,
+            91,
+            105,
+            69
+          ],
+          "recall@10": 0.42857142857142855,
+          "mrr": 1.0,
+          "ndcg@10": 0.5546406709327603
+        }
+      ]
+    },
+    {
+      "encoder": "B2_norm_stem_bag",
+      "ingest_total_ms": 7.41,
+      "ingest_ms_per_doc": 0.037,
+      "query_p50_ms": 0.287,
+      "query_mean_ms": 0.293,
+      "recall@10_mean": 0.4033,
+      "mrr_mean": 0.4539,
+      "ndcg@10_mean": 0.3397,
+      "per_query": [
+        {
+          "qid": 0,
+          "text": "Iran protests violence",
+          "gold_count": 12,
+          "retrieved": [
+            7,
+            138,
+            144,
+            73,
+            194,
+            84,
+            5,
+            135,
+            143,
+            18
+          ],
+          "recall@10": 0.3,
+          "mrr": 1.0,
+          "ndcg@10": 0.3785988060390612
+        },
+        {
+          "qid": 1,
+          "text": "Khamenei supreme leader",
+          "gold_count": 6,
+          "retrieved": [
+            18,
+            29,
+            65,
+            169,
+            99,
+            197,
+            54,
+            110,
+            127,
+            136
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 1.0,
+          "ndcg@10": 0.4103915680233244
+        },
+        {
+          "qid": 2,
+          "text": "Hezbollah statement warning",
+          "gold_count": 3,
+          "retrieved": [
+            93,
+            18,
+            74,
+            5,
+            7,
+            94,
+            170,
+            189,
+            184,
+            85
+          ],
+          "recall@10": 0.6666666666666666,
+          "mrr": 0.125,
+          "ndcg@10": 0.2893079283427616
+        },
+        {
+          "qid": 3,
+          "text": "Israeli Mossad operations",
+          "gold_count": 11,
+          "retrieved": [
+            25,
+            24,
+            174,
+            97,
+            173,
+            150,
+            198,
+            110,
+            139,
+            142
+          ],
+          "recall@10": 0.4,
+          "mrr": 1.0,
+          "ndcg@10": 0.5199967979955745
+        },
+        {
+          "qid": 4,
+          "text": "Trump statement on Iran",
+          "gold_count": 34,
+          "retrieved": [
+            138,
+            7,
+            73,
+            144,
+            194,
+            192,
+            74,
+            51,
+            18,
+            37
+          ],
+          "recall@10": 0.3,
+          "mrr": 0.3333333333333333,
+          "ndcg@10": 0.24309789328476902
+        },
+        {
+          "qid": 5,
+          "text": "missile strike attack",
+          "gold_count": 2,
+          "retrieved": [
+            127,
+            45,
+            121,
+            96,
+            133,
+            187,
+            75,
+            155,
+            73,
+            101
+          ],
+          "recall@10": 0.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0
+        },
+        {
+          "qid": 6,
+          "text": "Tehran city events",
+          "gold_count": 11,
+          "retrieved": [
+            81,
+            21,
+            20,
+            80,
+            62,
+            13,
+            41,
+            82,
+            94,
+            154
+          ],
+          "recall@10": 0.5,
+          "mrr": 0.5,
+          "ndcg@10": 0.47870393709728
+        },
+        {
+          "qid": 7,
+          "text": "Revolutionary Guard IRGC",
+          "gold_count": 3,
+          "retrieved": [
+            196,
+            179,
+            130,
+            192,
+            115,
+            150,
+            82,
+            168,
+            132,
+            174
+          ],
+          "recall@10": 0.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0
+        },
+        {
+          "qid": 8,
+          "text": "Iranian Foreign Minister",
+          "gold_count": 7,
+          "retrieved": [
+            197,
+            180,
+            27,
+            28,
+            76,
+            35,
+            34,
+            198,
+            187,
+            12
+          ],
+          "recall@10": 0.5714285714285714,
+          "mrr": 0.3333333333333333,
+          "ndcg@10": 0.4404477132565959
+        },
+        {
+          "qid": 9,
+          "text": "regime change",
+          "gold_count": 10,
+          "retrieved": [
+            76,
+            104,
+            127,
+            140,
+            139,
+            74,
+            145,
+            196,
+            177,
+            137
+          ],
+          "recall@10": 0.3,
+          "mrr": 0.25,
+          "ndcg@10": 0.23177307466786254
+        },
+        {
+          "qid": 10,
+          "text": "Netanyahu Israel",
+          "gold_count": 3,
+          "retrieved": [
+            132,
+            115,
+            130,
+            121,
+            160,
+            35,
+            53,
+            36,
+            67,
+            163
+          ],
+          "recall@10": 0.6666666666666666,
+          "mrr": 0.16666666666666666,
+          "ndcg@10": 0.3152014104491349
+        },
+        {
+          "qid": 11,
+          "text": "Larijani Iran politics",
+          "gold_count": 3,
+          "retrieved": [
+            73,
+            138,
+            7,
+            144,
+            194,
+            6,
+            120,
+            18,
+            5,
+            74
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 0.1,
+          "ndcg@10": 0.13565197343244778
+        },
+        {
+          "qid": 12,
+          "text": "Kurdish forces",
+          "gold_count": 2,
+          "retrieved": [
+            11,
+            134,
+            158,
+            156,
+            199,
+            154,
+            189,
+            152,
+            163,
+            121
+          ],
+          "recall@10": 0.5,
+          "mrr": 1.0,
+          "ndcg@10": 0.6131471927654584
+        },
+        {
+          "qid": 13,
+          "text": "Ali Khamenei statement",
+          "gold_count": 4,
+          "retrieved": [
+            93,
+            18,
+            197,
+            7,
+            178,
+            38,
+            33,
+            4,
+            26,
+            152
+          ],
+          "recall@10": 0.75,
+          "mrr": 0.5,
+          "ndcg@10": 0.6096199500078984
+        },
+        {
+          "qid": 14,
+          "text": "Lebanon border",
+          "gold_count": 7,
+          "retrieved": [
+            6,
+            184,
+            28,
+            83,
+            177,
+            118,
+            105,
+            195,
+            138,
+            196
+          ],
+          "recall@10": 0.42857142857142855,
+          "mrr": 0.5,
+          "ndcg@10": 0.4292486164007478
+        }
+      ]
+    },
+    {
+      "encoder": "C-_structural_no_hebbian",
+      "ingest_total_ms": 315.33,
+      "ingest_ms_per_doc": 1.577,
+      "query_p50_ms": 0.299,
+      "query_mean_ms": 0.299,
+      "recall@10_mean": 0.3971,
+      "mrr_mean": 0.74,
+      "ndcg@10_mean": 0.4418,
+      "per_query": [
+        {
+          "qid": 0,
+          "text": "Iran protests violence",
+          "gold_count": 12,
+          "retrieved": [
+            84,
+            5,
+            146,
+            6,
+            62,
+            85,
+            7,
+            94,
+            96,
+            135
+          ],
+          "recall@10": 0.3,
+          "mrr": 0.5,
+          "ndcg@10": 0.30701473034246535
+        },
+        {
+          "qid": 1,
+          "text": "Khamenei supreme leader",
+          "gold_count": 6,
+          "retrieved": [
+            197,
+            196,
+            53,
+            104,
+            10,
+            195,
+            127,
+            4,
+            54,
+            176
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 1.0,
+          "ndcg@10": 0.41966500663677697
+        },
+        {
+          "qid": 2,
+          "text": "Hezbollah statement warning",
+          "gold_count": 3,
+          "retrieved": [
+            93,
+            0,
+            170,
+            41,
+            172,
+            178,
+            192,
+            134,
+            152,
+            133
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 0.5,
+          "ndcg@10": 0.2960819109658652
+        },
+        {
+          "qid": 3,
+          "text": "Israeli Mossad operations",
+          "gold_count": 11,
+          "retrieved": [
+            97,
+            139,
+            148,
+            171,
+            24,
+            25,
+            196,
+            138,
+            141,
+            146
+          ],
+          "recall@10": 0.7,
+          "mrr": 1.0,
+          "ndcg@10": 0.7682269253321375
+        },
+        {
+          "qid": 4,
+          "text": "Trump statement on Iran",
+          "gold_count": 34,
+          "retrieved": [
+            71,
+            169,
+            52,
+            3,
+            66,
+            173,
+            150,
+            1,
+            40,
+            179
+          ],
+          "recall@10": 0.4,
+          "mrr": 1.0,
+          "ndcg@10": 0.5174612499126158
+        },
+        {
+          "qid": 5,
+          "text": "missile strike attack",
+          "gold_count": 2,
+          "retrieved": [
+            69,
+            121,
+            45,
+            21,
+            20,
+            62,
+            17,
+            134,
+            127,
+            192
+          ],
+          "recall@10": 0.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0
+        },
+        {
+          "qid": 6,
+          "text": "Tehran city events",
+          "gold_count": 11,
+          "retrieved": [
+            62,
+            146,
+            94,
+            40,
+            36,
+            72,
+            89,
+            106,
+            139,
+            167
+          ],
+          "recall@10": 0.2,
+          "mrr": 1.0,
+          "ndcg@10": 0.33013764944712026
+        },
+        {
+          "qid": 7,
+          "text": "Revolutionary Guard IRGC",
+          "gold_count": 3,
+          "retrieved": [
+            10,
+            159,
+            87,
+            89,
+            81,
+            43,
+            154,
+            70,
+            175,
+            192
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 1.0,
+          "ndcg@10": 0.46927872602275644
+        },
+        {
+          "qid": 8,
+          "text": "Iranian Foreign Minister",
+          "gold_count": 7,
+          "retrieved": [
+            35,
+            76,
+            27,
+            126,
+            28,
+            102,
+            184,
+            198,
+            75,
+            87
+          ],
+          "recall@10": 0.8571428571428571,
+          "mrr": 1.0,
+          "ndcg@10": 0.7949033785505174
+        },
+        {
+          "qid": 9,
+          "text": "regime change",
+          "gold_count": 10,
+          "retrieved": [
+            142,
+            137,
+            118,
+            62,
+            45,
+            166,
+            19,
+            140,
+            157,
+            177
+          ],
+          "recall@10": 0.5,
+          "mrr": 1.0,
+          "ndcg@10": 0.5730379245414764
+        },
+        {
+          "qid": 10,
+          "text": "Netanyahu Israel",
+          "gold_count": 3,
+          "retrieved": [
+            36,
+            35,
+            76,
+            109,
+            168,
+            83,
+            165,
+            110,
+            114,
+            160
+          ],
+          "recall@10": 0.6666666666666666,
+          "mrr": 1.0,
+          "ndcg@10": 0.7653606369886217
+        },
+        {
+          "qid": 11,
+          "text": "Larijani Iran politics",
+          "gold_count": 3,
+          "retrieved": [
+            5,
+            6,
+            138,
+            73,
+            144,
+            18,
+            194,
+            7,
+            120,
+            74
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 0.1,
+          "ndcg@10": 0.13565197343244778
+        },
+        {
+          "qid": 12,
+          "text": "Kurdish forces",
+          "gold_count": 2,
+          "retrieved": [
+            11,
+            80,
+            85,
+            107,
+            162,
+            165,
+            171,
+            193,
+            43,
+            153
+          ],
+          "recall@10": 0.5,
+          "mrr": 1.0,
+          "ndcg@10": 0.6131471927654584
+        },
+        {
+          "qid": 13,
+          "text": "Ali Khamenei statement",
+          "gold_count": 4,
+          "retrieved": [
+            197,
+            7,
+            62,
+            153,
+            93,
+            183,
+            72,
+            67,
+            85,
+            127
+          ],
+          "recall@10": 0.5,
+          "mrr": 1.0,
+          "ndcg@10": 0.6366824387328317
+        },
+        {
+          "qid": 14,
+          "text": "Lebanon border",
+          "gold_count": 7,
+          "retrieved": [
+            69,
+            196,
+            185,
+            91,
+            45,
+            171,
+            17,
+            75,
+            195,
+            88
+          ],
+          "recall@10": 0.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0
+        }
+      ]
+    },
+    {
+      "encoder": "C_structural_v13_hebbian",
+      "ingest_total_ms": 317.67,
+      "ingest_ms_per_doc": 1.588,
+      "query_p50_ms": 0.292,
+      "query_mean_ms": 0.297,
+      "recall@10_mean": 0.3971,
+      "mrr_mean": 0.74,
+      "ndcg@10_mean": 0.4418,
+      "per_query": [
+        {
+          "qid": 0,
+          "text": "Iran protests violence",
+          "gold_count": 12,
+          "retrieved": [
+            84,
+            5,
+            146,
+            6,
+            62,
+            85,
+            7,
+            94,
+            96,
+            135
+          ],
+          "recall@10": 0.3,
+          "mrr": 0.5,
+          "ndcg@10": 0.30701473034246535
+        },
+        {
+          "qid": 1,
+          "text": "Khamenei supreme leader",
+          "gold_count": 6,
+          "retrieved": [
+            197,
+            196,
+            53,
+            104,
+            10,
+            195,
+            127,
+            4,
+            54,
+            176
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 1.0,
+          "ndcg@10": 0.41966500663677697
+        },
+        {
+          "qid": 2,
+          "text": "Hezbollah statement warning",
+          "gold_count": 3,
+          "retrieved": [
+            93,
+            0,
+            170,
+            41,
+            172,
+            178,
+            192,
+            134,
+            152,
+            133
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 0.5,
+          "ndcg@10": 0.2960819109658652
+        },
+        {
+          "qid": 3,
+          "text": "Israeli Mossad operations",
+          "gold_count": 11,
+          "retrieved": [
+            97,
+            139,
+            148,
+            171,
+            24,
+            25,
+            196,
+            138,
+            141,
+            146
+          ],
+          "recall@10": 0.7,
+          "mrr": 1.0,
+          "ndcg@10": 0.7682269253321375
+        },
+        {
+          "qid": 4,
+          "text": "Trump statement on Iran",
+          "gold_count": 34,
+          "retrieved": [
+            71,
+            169,
+            52,
+            3,
+            66,
+            173,
+            150,
+            1,
+            40,
+            179
+          ],
+          "recall@10": 0.4,
+          "mrr": 1.0,
+          "ndcg@10": 0.5174612499126158
+        },
+        {
+          "qid": 5,
+          "text": "missile strike attack",
+          "gold_count": 2,
+          "retrieved": [
+            69,
+            121,
+            45,
+            21,
+            20,
+            62,
+            17,
+            134,
+            127,
+            192
+          ],
+          "recall@10": 0.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0
+        },
+        {
+          "qid": 6,
+          "text": "Tehran city events",
+          "gold_count": 11,
+          "retrieved": [
+            62,
+            146,
+            94,
+            40,
+            36,
+            72,
+            89,
+            106,
+            139,
+            167
+          ],
+          "recall@10": 0.2,
+          "mrr": 1.0,
+          "ndcg@10": 0.33013764944712026
+        },
+        {
+          "qid": 7,
+          "text": "Revolutionary Guard IRGC",
+          "gold_count": 3,
+          "retrieved": [
+            10,
+            159,
+            87,
+            89,
+            81,
+            43,
+            154,
+            70,
+            175,
+            192
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 1.0,
+          "ndcg@10": 0.46927872602275644
+        },
+        {
+          "qid": 8,
+          "text": "Iranian Foreign Minister",
+          "gold_count": 7,
+          "retrieved": [
+            35,
+            76,
+            27,
+            126,
+            28,
+            102,
+            184,
+            198,
+            75,
+            87
+          ],
+          "recall@10": 0.8571428571428571,
+          "mrr": 1.0,
+          "ndcg@10": 0.7949033785505174
+        },
+        {
+          "qid": 9,
+          "text": "regime change",
+          "gold_count": 10,
+          "retrieved": [
+            142,
+            137,
+            118,
+            62,
+            45,
+            166,
+            19,
+            140,
+            157,
+            177
+          ],
+          "recall@10": 0.5,
+          "mrr": 1.0,
+          "ndcg@10": 0.5730379245414764
+        },
+        {
+          "qid": 10,
+          "text": "Netanyahu Israel",
+          "gold_count": 3,
+          "retrieved": [
+            36,
+            35,
+            76,
+            109,
+            168,
+            83,
+            165,
+            110,
+            114,
+            160
+          ],
+          "recall@10": 0.6666666666666666,
+          "mrr": 1.0,
+          "ndcg@10": 0.7653606369886217
+        },
+        {
+          "qid": 11,
+          "text": "Larijani Iran politics",
+          "gold_count": 3,
+          "retrieved": [
+            5,
+            6,
+            138,
+            73,
+            144,
+            18,
+            194,
+            7,
+            120,
+            74
+          ],
+          "recall@10": 0.3333333333333333,
+          "mrr": 0.1,
+          "ndcg@10": 0.13565197343244778
+        },
+        {
+          "qid": 12,
+          "text": "Kurdish forces",
+          "gold_count": 2,
+          "retrieved": [
+            11,
+            80,
+            85,
+            107,
+            162,
+            165,
+            171,
+            193,
+            43,
+            153
+          ],
+          "recall@10": 0.5,
+          "mrr": 1.0,
+          "ndcg@10": 0.6131471927654584
+        },
+        {
+          "qid": 13,
+          "text": "Ali Khamenei statement",
+          "gold_count": 4,
+          "retrieved": [
+            197,
+            7,
+            62,
+            153,
+            93,
+            183,
+            72,
+            67,
+            85,
+            127
+          ],
+          "recall@10": 0.5,
+          "mrr": 1.0,
+          "ndcg@10": 0.6366824387328317
+        },
+        {
+          "qid": 14,
+          "text": "Lebanon border",
+          "gold_count": 7,
+          "retrieved": [
+            69,
+            196,
+            185,
+            91,
+            45,
+            171,
+            17,
+            75,
+            195,
+            88
+          ],
+          "recall@10": 0.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0
+        }
+      ]
+    }
+  ]
+}

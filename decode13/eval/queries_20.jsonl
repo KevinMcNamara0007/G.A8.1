@@ -1,0 +1,15 @@
+{"qid": 0, "text": "Iran protests violence", "required_tokens": ["iran", "protest"], "gold_doc_ids": [5, 6, 7, 8, 9, 98, 100, 116, 125, 129, 131, 194], "gold_count": 12, "label_source": "auto_token_AND"}
+{"qid": 1, "text": "Khamenei supreme leader", "required_tokens": ["khamenei"], "gold_doc_ids": [7, 10, 18, 153, 181, 197], "gold_count": 6, "label_source": "auto_token_AND"}
+{"qid": 2, "text": "Hezbollah statement warning", "required_tokens": ["hezbollah"], "gold_doc_ids": [0, 184, 189], "gold_count": 3, "label_source": "auto_token_AND"}
+{"qid": 3, "text": "Israeli Mossad operations", "required_tokens": ["mossad"], "gold_doc_ids": [24, 25, 39, 97, 102, 134, 138, 139, 141, 144, 148], "gold_count": 11, "label_source": "auto_token_AND"}
+{"qid": 4, "text": "Trump statement on Iran", "required_tokens": ["trump", "iran"], "gold_doc_ids": [5, 29, 33, 37, 38, 42, 51, 53, 54, 55, 57, 58, 59, 60, 63, 65, 66, 68, 70, 71, 73, 78, 99, 128, 143, 149, 150, 159, 164, 165, 167, 169, 170, 172], "gold_count": 34, "label_source": "auto_token_AND"}
+{"qid": 5, "text": "missile strike attack", "required_tokens": ["missile"], "gold_doc_ids": [31, 32], "gold_count": 2, "label_source": "auto_token_AND"}
+{"qid": 6, "text": "Tehran city events", "required_tokens": ["tehran"], "gold_doc_ids": [13, 20, 21, 23, 47, 62, 94, 96, 102, 134, 176], "gold_count": 11, "label_source": "auto_token_AND"}
+{"qid": 7, "text": "Revolutionary Guard IRGC", "required_tokens": ["guard"], "gold_doc_ids": [10, 156, 193], "gold_count": 3, "label_source": "auto_token_AND"}
+{"qid": 8, "text": "Iranian Foreign Minister", "required_tokens": ["foreign", "minister"], "gold_doc_ids": [27, 28, 35, 102, 161, 184, 198], "gold_count": 7, "label_source": "auto_token_AND"}
+{"qid": 9, "text": "regime change", "required_tokens": ["regime"], "gold_doc_ids": [35, 109, 137, 140, 142, 145, 147, 157, 166, 199], "gold_count": 10, "label_source": "auto_token_AND"}
+{"qid": 10, "text": "Netanyahu Israel", "required_tokens": ["netanyahu"], "gold_doc_ids": [35, 36, 170], "gold_count": 3, "label_source": "auto_token_AND"}
+{"qid": 11, "text": "Larijani Iran politics", "required_tokens": ["larijani"], "gold_doc_ids": [74, 87, 100], "gold_count": 3, "label_source": "auto_token_AND"}
+{"qid": 12, "text": "Kurdish forces", "required_tokens": ["kurdish"], "gold_doc_ids": [11, 47], "gold_count": 2, "label_source": "auto_token_AND"}
+{"qid": 13, "text": "Ali Khamenei statement", "required_tokens": ["khamenei", "ali"], "gold_doc_ids": [7, 10, 18, 197], "gold_count": 4, "label_source": "auto_token_AND"}
+{"qid": 14, "text": "Lebanon border", "required_tokens": ["lebanon"], "gold_doc_ids": [27, 28, 83, 111, 161, 184, 189], "gold_count": 7, "label_source": "auto_token_AND"}
