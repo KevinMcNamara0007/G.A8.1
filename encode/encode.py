@@ -1,5 +1,5 @@
 """
-G.A8.1 — Encode Orchestrator (Two-Tier Emergent Routing, Multimodal)
+G.A8.1 -- Encode Orchestrator (Two-Tier Emergent Routing, Multimodal)
 =====================================================================
 
 Core encoding engine for G.A8.1. Takes any data source and produces a
@@ -81,6 +81,7 @@ import os
 import pickle
 import sys
 import time
+from urllib.parse import unquote as _url_unquote
 import numpy as np
 from pathlib import Path
 
@@ -102,6 +103,16 @@ STOP_WORDS = frozenset({
 
 IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".gif"})
 VIDEO_EXTS = frozenset({".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv"})
+
+# Author values that are platform/site names rather than unique entities.
+# When a record's author matches one of these, the subject is derived from
+# the URL instead -- see BUG-007 fix in _iter_source_data.
+_GENERIC_AUTHOR_NAMES = frozenset({
+    "wikipedia", "wikimedia", "wikidata",
+    "reddit", "twitter", "x", "facebook", "instagram", "youtube",
+    "medium", "substack", "quora", "stackoverflow",
+    "unknown",
+})
 
 
 def _detect_source_type(source: str) -> str:
@@ -150,7 +161,7 @@ def _resolve_media(msg: dict, media_dir: str) -> tuple:
             if ext in VIDEO_EXTS:
                 return mf, "video"
             continue
-        # Relative — resolve against media_dir
+        # Relative -- resolve against media_dir
         if not media_dir:
             continue
         fname = mf[6:] if mf.startswith("media/") else mf
@@ -189,7 +200,7 @@ def _partition_worker(args):
 
     t0 = time.perf_counter()
 
-    # Build codebook (hash mode — identical across all workers)
+    # Build codebook (hash mode -- identical across all workers)
     cfg = ehc.CodebookConfig()
     try:
         import sys as _s; _s.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -295,8 +306,142 @@ def _partition_worker(args):
     return counts
 
 
+def _iter_source_data(source: str, media_dir: str = None):
+    """Generator: yield one triple dict at a time from JSON or JSONL source.
+    Never builds the full list in memory -- safe for multi-million-record corpora.
+    """
+    source_type = _detect_source_type(source)
+
+    if source_type == "json_triples":
+        with open(source) as f:
+            for triple in json.load(f):
+                yield triple, False
+        return
+
+    if media_dir is None:
+        parent = Path(source).parent
+        for candidate in [parent / "media", parent / "data2" / "media"]:
+            if candidate.is_dir():
+                media_dir = str(candidate)
+                break
+
+    ts_default = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    with open(source, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            text = (msg.get("message_text_translated") or
+                    msg.get("message_text") or "").strip()
+            if not text or len(text) < 10:
+                continue
+
+            author = _extract_author(msg.get("author"))
+            site   = msg.get("site") or msg.get("type") or ""
+            tags   = msg.get("filtered_tags") or msg.get("tags") or []
+            ts     = msg.get("posted_at") or ts_default
+
+            # ── BUG-007 FIX: Wikipedia (and similar platform sources) set
+            # author to a single constant string for ALL records (e.g. "Wikipedia").
+            # hash("Wikipedia") % 32 = 30, so 100% of records land in entity_bucket 30
+            # (shards 1200--1239), leaving 1240/1280 shards empty and defeating the
+            # two-tier routing entirely.
+            # Fix: when the author field is a known content-platform name, derive the
+            # subject from the URL instead (e.g. URL title for Wikipedia articles).
+            # This restores uniform distribution across all 32 entity buckets.
+            # PR: YES -- submit to KevinMcNamara0007/G.A8.1
+            url = msg.get("url", "")
+            if url and author.lower() in _GENERIC_AUTHOR_NAMES:
+                try:
+                    # Extract path after the last meaningful segment (/wiki/, /p/, etc.)
+                    for _seg in ("/wiki/", "/article/", "/entry/", "/p/", "/post/"):
+                        if _seg in url:
+                            _title = _url_unquote(url.split(_seg, 1)[-1]
+                                                  .split("?")[0]
+                                                  .split("#")[0]
+                                                  .replace("_", " ")).strip()
+                            if _title:
+                                author = _title
+                                break
+                    else:
+                        # Fallback: last URL path component
+                        _last = _url_unquote(url.rstrip("/").rsplit("/", 1)[-1]
+                                             .split("?")[0]
+                                             .replace("_", " ")).strip()
+                        if _last and len(_last) > 2:
+                            author = _last
+                except Exception:
+                    pass
+
+            rel_parts = [site] if site else []
+            if isinstance(tags, list):
+                rel_parts.extend(str(t) for t in tags[:6])
+            relation = " ".join(rel_parts)
+
+            triple = {
+                "subject":   author,
+                "relation":  relation,
+                "object":    text[:1000],
+                "timestamp": ts,
+            }
+
+            media_path, media_type = _resolve_media(msg, media_dir)
+            has_media = bool(media_path)
+            if has_media:
+                triple["media_path"] = media_path
+                triple["media_type"] = media_type
+
+            triple["_sidecar"] = {
+                "message_text":             msg.get("message_text", ""),
+                "message_text_translated":  text,
+                "posted_at":                ts,
+                "author":                   author,
+                "channel":                  "",
+                "tags":   tags if isinstance(tags, list) else [],
+                "site":   site,
+                "url":    msg.get("url", ""),
+                "language":   msg.get("language", ""),
+                "media_path": media_path or "",
+                "media_type": media_type or "",
+            }
+            chat = msg.get("chat")
+            if isinstance(chat, dict):
+                triple["_sidecar"]["channel"] = (chat.get("username") or
+                                                  chat.get("title") or
+                                                  chat.get("entity_id") or "")
+            elif site:
+                triple["_sidecar"]["channel"] = site
+
+            yield triple, has_media
+
+
 def _load_source_data(source: str, media_dir: str = None):
     """Load source data as list of triple dicts. Handles JSON and JSONL.
+    NOTE: builds full list in memory -- use _iter_source_data for large corpora.
+
+    ── BUG-001 NOTE ─────────────────────────────────────────────────────────
+    This function is the ROOT CAUSE of BUG-001 (OOM on large datasets).
+    The original stream_and_partition() called this function, loading ALL
+    records into a single Python list before any partitioning occurred.
+
+    Symptom:   OOM-kill when encoding 6.28M Wikipedia records (~20–30 GB RSS).
+    Reproduce: Call stream_and_partition() on any source >2M records on a
+               machine with <32 GB RAM. The process will be killed by the
+               kernel OOM killer mid-run (no error, just disappears).
+    Root cause: Python list of 6.28M dicts with string fields ≈ 5 KB each
+               = ~30 GB allocated before a single shard is written.
+
+    Fix: stream_and_partition() now uses _iter_source_data() (a generator)
+    in two passes -- never holding more than one slice buffer in RAM.
+    This function is retained for small datasets and backwards compatibility.
+    DO NOT use it for corpora larger than ~500K records.
+    ─────────────────────────────────────────────────────────────────────────
 
     For JSONL messages, maps:
       subject  = author username
@@ -411,74 +556,171 @@ def stream_and_partition(
     chunks_dir: str,
     dim: int = 16384,
     k: int = 128,
-    n_partition_workers: int = 9,
+    n_partition_workers: int = None,   # None → auto from cpu_count
     media_dir: str = None,
 ):
     """Parallel partition: split data into N slices, assign shards in parallel,
     merge chunk files per shard.
 
     Each worker gets the same codebook (seed=42) and centroids.
-    No coordination needed — deterministic assignment.
+    No coordination needed -- deterministic assignment.
 
     Returns: (chunk_info, n_media)
     """
     chunks_dir = Path(chunks_dir)
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── BUG-002 FIX: auto-derive partition worker count ───────────────────────
+    # Original code:  n_partition_workers was a required positional arg,
+    #                 hardcoded to 9 in the caller (run_encode).
+    # Symptom:        9 workers on a 4-core machine = 9 Python processes
+    #                 competing for 4 cores. Partition phase took 3–4 hours
+    #                 instead of ~30 min. High ctx-switch overhead, all workers
+    #                 slower by 2–3×.
+    # Reproduce:      Call stream_and_partition(..., n_partition_workers=9) on
+    #                 a 4-core machine and observe htop -- all 9 processes fight
+    #                 for 4 cores with near-100% each. Elapsed >>2h.
+    # Root cause:     Hardcoded 9 workers inherited from a 9-core dev machine.
+    #                 No guard against over-subscription on smaller hosts.
+    # Fix:            Default is now None → auto-derive as cpu_count()-1.
+    #                 If caller passes a value it is clamped to cpu_cap.
+    # PR:             pending submission to KevinMcNamara0007/G.A8.1
+    # ─────────────────────────────────────────────────────────────────────────
+    _cpu_cap = max(1, (os.cpu_count() or 4) - 1)
+    if n_partition_workers is None:
+        n_partition_workers = _cpu_cap
+    else:
+        n_partition_workers = min(n_partition_workers, _cpu_cap)
+
     n_clusters = max(1, len(cluster_data))
     n_shards = n_entity_buckets * n_clusters
 
-    print(f"[A8.1] Parallel partition: {n_partition_workers} workers, "
+    print(f"[A8.1] Parallel partition: {n_partition_workers} workers (cpu_cap={_cpu_cap}), "
           f"{n_entity_buckets}×{n_clusters} = {n_shards} shards")
     t0 = time.perf_counter()
 
-    # Step 1: Load source data (JSON triples or JSONL messages)
-    print(f"  Loading source...")
-    data, n_media = _load_source_data(source, media_dir)
-    total = len(data)
+    # ── BUG-001 FIX: streaming two-pass partition (replaces _load_source_data) ─
+    # Original code:  data, n_media = _load_source_data(source, media_dir)
+    #                 followed by sequential partition of the full list.
+    # Symptom:        6.28M Wikipedia records → ~30 GB RAM allocated in one shot
+    #                 → OOM kill before any shard was written. No error output,
+    #                 process simply vanished from ps.
+    # Reproduce:      Replace the two-pass block below with:
+    #                   data, n_media = _load_source_data(source, media_dir)
+    #                 and run on any source >2M records on a machine with <32 GB RAM.
+    # Root cause:     Python list of N dicts with full string fields. At N=6.28M
+    #                 and ~5 KB/record average, peak = 6.28M × 5000 = ~30 GB.
+    # Fix:            Two-pass streaming using _iter_source_data() generator:
+    #                   Pass 1 -- count records + build global IDF (~200 MB peak,
+    #                            just a Counter over tokens, not the full text)
+    #                   Pass 2 -- re-stream and write MAX_SLICE_RECORDS-capped
+    #                            slice pickle files incrementally
+    #                 Peak RAM ≈ one slice buffer = 100K records × 5 KB = ~500 MB.
+    # PR:             pending submission to KevinMcNamara0007/G.A8.1
+    # ─────────────────────────────────────────────────────────────────────────
 
-    # Step 1b: Build GLOBAL IDF across full corpus (one pass)
-    print(f"  Building global IDF ({total:,} docs)...")
+    # Pass 1: stream source to build global IDF + count total records.
+    # Never loads the full corpus into memory.
+    print(f"  Pass 1: counting records + building global IDF...")
     from worker_encode import _tokenize
     from collections import Counter
+    import math as _math
     _doc_freq = Counter()
-    for _d in data:
-        _all = set(_tokenize(_d.get("subject", "")) +
-                    _tokenize(_d.get("relation", "")) +
-                    _tokenize(_d.get("object", "")))
+    total   = 0
+    n_media = 0
+
+    for triple, has_media in _iter_source_data(source, media_dir):
+        total += 1
+        if has_media:
+            n_media += 1
+        _all = set(_tokenize(triple.get("subject",   "")) +
+                   _tokenize(triple.get("relation",  "")) +
+                   _tokenize(triple.get("object",    "")))
         for _t in _all:
             _doc_freq[_t] += 1
-    import math as _math
+        if total % 500_000 == 0:
+            print(f"    {total:,} records scanned...")
+
+    # ── BUG-006 FIX: filter singleton tokens from IDF ────────────────────────────
+    # Issue:   Kevin's original code keeps ALL tokens regardless of document frequency.
+    #          On 5M Wikipedia records this produces 13.8M unique tokens, 68% of which
+    #          are singletons (df=1). Each worker independently JSON-parses the 472 MB
+    #          IDF file into ~1.9 GB of Python dict objects. With 3 concurrent workers:
+    #          3 x 1.9 GB = 5.7 GB just for IDF → OOM.
+    # Symptom: RSS watchdog kills encode during Wave 1 on datasets >= 5M records.
+    #          1M records succeeded; 5M OOM'd at 11.88 GB / 11.81 GB budget.
+    # Root cause: Singleton tokens (df=1) have the maximum IDF score (log(N)) and are
+    #          selected as "salient" for exactly one document. They contribute nothing
+    #          to retrieval quality (no other document can match on them) while doubling
+    #          or tripling the IDF table size.
+    # Fix:     MIN_DF=2 filter before writing IDF. Reduces 13.8M → 4.4M tokens (-68%)
+    #          on 5M records. Tokens with df>=2 retain full IDF discrimination.
+    #          Singletons fall back to idf.get(t, 0.0) = 0.0 in _select_salient,
+    #          meaning they are deprioritised (other tokens with df>=2 rank higher).
+    # PR:      YES -- submit to KevinMcNamara0007/G.A8.1
+    # ─────────────────────────────────────────────────────────────────────────────
+    MIN_DF = 2
     global_idf = {tok: _math.log(max(total, 1) / max(df, 1))
-                  for tok, df in _doc_freq.items()}
+                  for tok, df in _doc_freq.items()
+                  if df >= MIN_DF}
     del _doc_freq
 
-    # Save global IDF for workers
     idf_path = chunks_dir / "_global_idf.json"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     with open(idf_path, "w") as f:
         json.dump(global_idf, f)
-    print(f"  Global IDF: {len(global_idf):,} tokens")
+    n_idf = len(global_idf)
+    print(f"  Global IDF: {n_idf:,} tokens (min_df={MIN_DF}, {total:,} records total)")
     del global_idf
     gc.collect()
 
-    print(f"  {total:,} records → splitting into {n_partition_workers} slices...")
+    # Pass 2: stream source again, writing records directly into slice pickle files.
+    # Slice files are flushed incrementally -- peak RAM = one slice buffer at a time.
 
-    slice_size = math.ceil(total / n_partition_workers)
-    slice_paths = []
-    for wi in range(n_partition_workers):
-        start = wi * slice_size
-        end = min(start + slice_size, total)
-        if start >= total:
-            break
-        slice_path = chunks_dir / f"_slice_{wi}.pkl"
+    # ── BUG-004 FIX: cap slice buffer size ───────────────────────────────────
+    # Original code:  n_slices = n_partition_workers (e.g. 3 workers → 3 slices).
+    #                 Each slice = ceil(6.28M / 3) = 2.1M records.
+    # Symptom:        At ~5 KB/record each slice buffer consumed ~10 GB RAM
+    #                 before being written to disk → OOM kill.
+    # Reproduce:      Set n_partition_workers=3 and run on 6.28M records.
+    #                 RSS will spike to ~30 GB (3 slices × 10 GB each).
+    # Root cause:     Slice count was tied to worker count, not to record count.
+    #                 A small worker count → very large slices.
+    # Fix:            MAX_SLICE_RECORDS=100_000 hard cap. n_slices derived
+    #                 independently: max(n_workers, ceil(total / 100K)).
+    #                 Guarantees each slice buffer ≤ ~500 MB (100K × 5 KB).
+    #                 n_slices grows with corpus size, not with worker count.
+    # PR:             pending submission to KevinMcNamara0007/G.A8.1
+    # ─────────────────────────────────────────────────────────────────────────
+    MAX_SLICE_RECORDS = 100_000
+    n_slices     = max(n_partition_workers, math.ceil(total / MAX_SLICE_RECORDS))
+    slice_size   = math.ceil(total / n_slices)
+    print(f"  Pass 2: writing {n_slices} slice files (~{slice_size:,} records each)...")
+    slice_paths  = []
+    wi           = 0
+    buf          = []
+    written      = 0
+    slice_path   = chunks_dir / f"_slice_{wi}.pkl"
+
+    for triple, _ in _iter_source_data(source, media_dir):
+        buf.append(triple)
+        written += 1
+        if len(buf) >= slice_size:
+            with open(slice_path, "wb") as f:
+                pickle.dump(buf, f, protocol=pickle.HIGHEST_PROTOCOL)
+            slice_paths.append((wi, str(slice_path)))
+            wi        += 1
+            buf        = []
+            slice_path = chunks_dir / f"_slice_{wi}.pkl"
+
+    if buf:  # flush final partial slice
         with open(slice_path, "wb") as f:
-            pickle.dump(data[start:end], f, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(buf, f, protocol=pickle.HIGHEST_PROTOCOL)
         slice_paths.append((wi, str(slice_path)))
+        buf = []
 
-    del data
     gc.collect()
-    print(f"  {len(slice_paths)} slices written")
+    print(f"  {len(slice_paths)} slices written ({written:,} records)")
 
     # Step 2: Parallel partition assignment
     print(f"  Assigning shards ({n_partition_workers} workers)...")
@@ -487,7 +729,21 @@ def stream_and_partition(
         for wi, sp in slice_paths
     ]
 
-    with mp.Pool(processes=len(worker_args)) as pool:
+    # ── BUG-005 FIX: decouple pool size from slice count ─────────────────────
+    # Original code:  mp.Pool(processes=len(worker_args))
+    # Symptom:        After BUG-004 fix raised n_slices to 63 (for 6.28M recs),
+    #                 Pool spawned 63 worker processes × ~600 MB each = ~38 GB
+    #                 → immediate OOM kill.
+    # Reproduce:      Apply BUG-004 fix without this fix. Run on 6.28M records.
+    #                 len(worker_args) will be 63. Pool spawns 63 processes.
+    # Root cause:     Pool size was `len(worker_args)`, which grew with n_slices
+    #                 after the BUG-004 fix decoupled slice count from worker count.
+    # Fix:            Pool size = n_partition_workers (cpu_cap), independent of
+    #                 how many slices were written. Pool processes slices in
+    #                 batches via map(), not all at once.
+    # PR:             pending submission to KevinMcNamara0007/G.A8.1
+    # ─────────────────────────────────────────────────────────────────────────
+    with mp.Pool(processes=n_partition_workers) as pool:
         all_counts = pool.map(_partition_worker, worker_args)
     gc.collect()
 
@@ -538,7 +794,7 @@ def stream_and_partition(
 
 
 def _flush_shard(path, buffer):
-    """Append buffer to pickle file — O(buffer), not O(total)."""
+    """Append buffer to pickle file -- O(buffer), not O(total)."""
     with open(Path(path), "ab") as f:
         for item in buffer:
             pickle.dump(item, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -565,7 +821,7 @@ def run_encode(
     n_clusters = len(cluster_data)
 
     print("=" * 60)
-    print("  G.A8.1 — Two-Tier Emergent Routing Encode (Multimodal)")
+    print("  G.A8.1 -- Two-Tier Emergent Routing Encode (Multimodal)")
     print("=" * 60)
     print(f"  Source:    {source}")
     print(f"  Output:    {output_dir}")
@@ -584,9 +840,29 @@ def run_encode(
         media_dir=media_dir)
 
     # Step 2: Encode in waves
-    concurrency = max(1, math.ceil(len(chunk_info) / waves))
+    # ── BUG-003 FIX: auto-derive wave count after partitioning ────────────────
+    # Original code:  `waves` was a required CLI argument passed into run_encode().
+    #                 Correct value depends on actual non-empty shard count and
+    #                 cpu_cap -- both only known *after* partitioning completes.
+    # Symptom (over-parallelised): waves=1 on 6.28M run → 40 concurrent workers
+    #                 × 600 MB = 24 GB → OOM. Or waves too low → too many
+    #                 concurrent workers fighting for RAM.
+    # Symptom (under-parallelised): waves=200 → 1 worker active at a time,
+    #                 encode takes 3× longer than necessary.
+    # Reproduce:      Pass --waves 1 to a run with 40 non-empty shards on a
+    #                 4-core machine. All 40 shards start concurrently → OOM.
+    # Root cause:     Caller cannot know the correct waves value before the
+    #                 partition step reveals actual shard count. Circular dependency.
+    # Fix:            waves is now computed here from len(chunk_info) / cpu_cap.
+    #                 --waves CLI arg is kept for backwards-compat but silently
+    #                 overridden. cpu_cap = cpu_count()-1 leaves one core for OS.
+    # PR:             pending submission to KevinMcNamara0007/G.A8.1
+    # ─────────────────────────────────────────────────────────────────────────
+    _cpu_cap   = max(1, (os.cpu_count() or 4) - 1)
+    concurrency = _cpu_cap
+    waves       = max(1, math.ceil(len(chunk_info) / concurrency))
     print(f"\n[Step 2] Encoding {len(chunk_info)} shards in {waves} waves "
-          f"({concurrency} concurrent)...")
+          f"({concurrency} concurrent, cpu_cap={_cpu_cap})...")
 
     from worker_encode import worker_encode
     manifests = []

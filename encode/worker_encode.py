@@ -292,6 +292,51 @@ def worker_encode(args):
 
     Args tuple: (worker_id, chunk_pkl_path, dim, k, output_dir,
                  cluster_centroids_list)
+
+    ── BUG-W01: Large shard deadlock (futex_wait, never returns) ────────────
+    Status:     UNDER INVESTIGATION — not yet fixed, reproduced at 6.28M scale
+    Observed:   Wave 1, shard_1200 (718K records, 2.8 GB chunk pickle).
+                Worker loaded chunks into RAM (5.2 GB RSS), wrote ~2.3 GB of
+                index to disk, then entered futex_wait indefinitely.
+                shard_1200 output dir remained empty (no index written).
+                Main process (encode orchestrator) also blocked on futex_wait.
+                Co-blocked workers: PIDs 81378, 81382.
+                Unaffected: shard_1201 (342K records, completed OK at 412s),
+                            shard_1202 (partial, unclear state).
+    Reproduce:  Encode 6.28M Wikipedia records on 4-core/16GB machine.
+                Deadlock occurs at Wave 1 processing shard_1200 (~718K records).
+                Does NOT reproduce at ≤14K records/shard (100K dataset, 40 shards).
+                Testing at 1M records (max shard ~142K) to find threshold.
+    Hypothesis: C++ EHC library (most likely one of: SidecarWriter.append(),
+                TokenCodebook internal state, or ehc.superpose()) contains a
+                thread-unsafe code path that enters a kernel futex wait when
+                called from a multiprocessing worker under high memory pressure
+                (RSS >4 GB). The condition appears size-triggered — fine at
+                14K records, broken at 718K.
+    Suspects (in order of likelihood):
+      1. SidecarWriter — writes EHS1 binary via C++ file-backed mmap.
+         When RSS is high, the OS may need to swap pages during mmap flush,
+         and if the C++ code holds a lock during that flush, another thread
+         (or the GC) could deadlock against it.
+      2. TokenCodebook / LRUCache — if the internal hash map is not
+         re-entrant, a GC finalizer calling __del__ on a stale reference
+         from a previous wave could block cb.encode_token().
+      3. ehc.superpose() — if it allocates internal scratch buffers that
+         are shared across calls within the same process pool worker.
+    Investigation plan:
+      Step 1: 1M records → max shard ~142K → check for deadlock.
+      Step 2: 5M records → max shard ~710K → approaching observed threshold.
+      Step 3: If 5M deadlocks, bisect: test at 200K, 400K, 600K records/shard.
+      Step 4: Once threshold found, isolate by commenting out SidecarWriter
+              block below and re-testing. If deadlock disappears → SidecarWriter
+              is the culprit. If not, isolate TokenCodebook and superpose.
+    Fix:    TBD pending investigation result.
+            Candidate fixes:
+              - Add per-shard MAX_RECORDS cap in run_encode (split oversized shards)
+              - Wrap SidecarWriter in a subprocess with timeout + retry
+              - Replace SidecarWriter mmap flush with explicit msync() calls
+    PR:     Will be submitted to KevinMcNamara0007/G.A8.1 once root cause confirmed.
+    ─────────────────────────────────────────────────────────────────────────
     """
     worker_id, chunk_pkl_path, dim, k, output_dir, cluster_centroids_raw = args
 
@@ -317,6 +362,12 @@ def worker_encode(args):
     print(f"  [shard {worker_id:04d}] {n:,} chunks...")
 
     # ── Codebook (hash mode) ─────────────────────────────────
+    # ── BUG-W01 SUSPECT #2: TokenCodebook ────────────────────────────────────
+    # If the C++ TokenCodebook or its internal LRU cache is not re-entrant,
+    # a GC finalizer from a previous wave's stale reference could deadlock
+    # against cb.encode_token() in the hot loop below.
+    # TO BISECT: disable token_cache (set token_cache = None below) and re-run.
+    # ─────────────────────────────────────────────────────────────────────────
     try:
         from config import cfg as a81_cfg
         _seed = a81_cfg.SEED
@@ -609,6 +660,17 @@ def worker_encode(args):
     gc.collect()
 
     # ── Save HIDDEN sidecar metadata (EHS1 binary format) ────
+    # ── BUG-W01 SUSPECT #1: SidecarWriter ────────────────────────────────────
+    # This block is the primary suspect for the large-shard deadlock (BUG-W01).
+    # When RSS is high (>4 GB, observed at 718K records), SidecarWriter may
+    # deadlock inside writer.finalize() due to mmap page-flush contention.
+    #
+    # TO BISECT BUG-W01: comment out this entire block (writer = ... finalize())
+    # and re-run the large shard. If the deadlock disappears, SidecarWriter is
+    # confirmed as the root cause. Report to Kevin with shard size and RSS at time
+    # of deadlock. The JSON sidecar backup below (meta/*.json) is sufficient for
+    # functionality during investigation.
+    # ─────────────────────────────────────────────────────────────────────────
     from pathlib import Path as _Path
     _ga81 = _Path(__file__).resolve().parent.parent
     if str(_ga81) not in sys.path:
