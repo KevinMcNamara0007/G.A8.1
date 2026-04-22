@@ -122,6 +122,22 @@ class QueryService:
         self._pipe = ehc.StructuralPipelineV13.load(str(self._pipe_dir))
         t_pipe = time.perf_counter() - t0
 
+        # Second LSH handle pointing at the same lsh.bin — needed for
+        # raw-vector queries (analogy / what-if / abductive / connections
+        # paths that go through vector arithmetic, not text). Doubles LSH
+        # memory; acceptable for the corpus scales v13.1 targets. Deferred
+        # optimization: expose the pipeline's internal LSH via EHC so
+        # we don't need the second handle.
+        self._lsh: Optional[Any] = None
+        lsh_path = self._pipe_dir / "lsh.bin"
+        if lsh_path.exists():
+            try:
+                self._lsh = ehc.BSCLSHIndex.load(str(lsh_path))
+            except Exception as e:
+                logger.warning(
+                    "QueryService: raw-vector LSH handle unavailable "
+                    "(%s). Vector-arithmetic endpoints will be disabled.", e)
+
         t0 = time.perf_counter()
         self._docs: Dict[int, dict] = {}
         with open(paths["corpus"], "r", encoding="utf-8", errors="replace") as f:
@@ -256,6 +272,12 @@ class QueryService:
                 break
 
         # Cheap recency re-rank when requested (monotonic on posted_at).
+        # `now` is snapped to the nearest minute so repeated queries in the
+        # same 60-second window produce byte-identical orderings. Without
+        # this, two calls ~seconds apart can reshuffle near-tied records
+        # because the decay ratio drifts by ~1e-4 per second — enough to
+        # cross scores when the top-k cluster tightly (which is the norm
+        # for narrative retrieval on social-media corpora).
         if prefer_recent and results:
             def _ts(r):
                 t = r["metadata"].get("timestamp", "")
@@ -264,7 +286,7 @@ class QueryService:
                 except Exception:
                     return 0.0
             half = max(float(recency_half_life_hours or 168.0), 1e-3) * 3600.0
-            now = time.time()
+            now = (int(time.time()) // 60) * 60  # minute-boundary snap
             for r in results:
                 age = max(now - _ts(r), 0.0)
                 r["similarity"] = float(r["similarity"]) * (0.5 ** (age / half))
@@ -281,6 +303,214 @@ class QueryService:
                 "n_retrieved":  len(ids),
                 "n_returned":   len(results),
             },
+        }
+
+    # ── Vector-level primitives (Phase 1 of reasoning port) ──
+    #
+    # These expose the raw-vector surface the legacy edge reasoning paths
+    # (analogy / what-if / abductive / connections) used to get from
+    # `app_state.bsc_index` + `app_state.get_vector_by_id`. Purely read-only;
+    # safe to call concurrently with text queries.
+
+    def get_vector_by_id(self, doc_id: int):
+        """Return the encoded ehc.SparseVector for a stored doc_id, or
+        None if the id isn't in the index or the LSH handle is unavailable.
+
+        Wraps BSCLSHIndex.get_vector_by_id; the vector is a copy (safe to
+        pass into vector-ops without worrying about index mutation)."""
+        if self._lsh is None:
+            return None
+        try:
+            return self._lsh.get_vector_by_id(int(doc_id))
+        except Exception:
+            return None
+
+    def knn_vec(self, vec, k: int = 10) -> List[Dict[str, Any]]:
+        """Raw-vector k-NN. Input is an ehc.SparseVector; output is a list
+        of {id, similarity, metadata} dicts in descending similarity order.
+
+        Metadata shape matches the text `query()` path so downstream code
+        can treat both paths uniformly."""
+        if self._lsh is None:
+            return []
+        r = self._lsh.knn_query(vec, k=int(k))
+        ids = list(r.ids)
+        scores = list(r.scores)
+        out: List[Dict[str, Any]] = []
+        for doc_id, sim in zip(ids, scores):
+            out.append({
+                "id": str(doc_id),
+                "doc_id": int(doc_id),
+                "similarity": float(sim),
+                "metadata": self._lookup(int(doc_id)),
+            })
+        return out
+
+    def similarity(self, v1, v2) -> float:
+        """Cosine similarity between two ehc.SparseVector instances.
+
+        Returns 0.0 if either vector is None or the vector-ops surface is
+        somehow unavailable. Uses ehc.sparse_cosine — the same scoring
+        primitive the C++ LSH uses internally."""
+        if v1 is None or v2 is None:
+            return 0.0
+        try:
+            return float(ehc.sparse_cosine(v1, v2))
+        except Exception:
+            return 0.0
+
+    def get_metadata(self, doc_id: int) -> Dict[str, Any]:
+        """Public wrapper around the sidecar lookup (mirrors the legacy
+        `app_state.get_metadata(vec_id)` surface)."""
+        return self._lookup(int(doc_id))
+
+    # ── Phase 2 reasoning endpoints ────────────────────────────
+    # Analogy and what-if are pure vector arithmetic on top of the Phase-1
+    # primitives. They don't need a role registry or multi-hop traversal.
+
+    def analogy(self, a_id: int, b_id: int, c_id: int,
+                top_k: int = 5) -> Dict[str, Any]:
+        """Solve A:B :: C:? via BSC vector arithmetic.
+
+        Computes D = superpose([C, B, negate(A)]) with top-k
+        sparsification tied to the pipeline's k (so D has the same
+        sparsity as any other encoded vector in the index). Returns the
+        nearest neighbors to D, excluding the three input doc_ids."""
+        a = self.get_vector_by_id(a_id)
+        b = self.get_vector_by_id(b_id)
+        c = self.get_vector_by_id(c_id)
+        if a is None or b is None or c is None:
+            return {"results": [], "confidence": 0.0,
+                    "audit": {"strategy": "a81_analogy",
+                              "reason": "missing_input_vector"}}
+        # D = C + B − A
+        pipe_k = int(self._pipe.config().k)
+        d = ehc.superpose([c, b, ehc.negate(a)], pipe_k)
+        fetch = max(int(top_k) + 3, 10)
+        cand = self.knn_vec(d, k=fetch)
+        # Drop the three input ids so the analogy target isn't its own input.
+        exclude = {int(a_id), int(b_id), int(c_id)}
+        results = [h for h in cand if h["doc_id"] not in exclude][:int(top_k)]
+        confidence = results[0]["similarity"] if results else 0.0
+        return {
+            "results": results,
+            "confidence": float(confidence),
+            "audit": {"strategy": "a81_analogy",
+                      "a_id": a_id, "b_id": b_id, "c_id": c_id,
+                      "candidates_considered": len(cand)},
+        }
+
+    def what_if(self, superposition_id: int, component_id: int,
+                goal_id: int) -> Dict[str, Any]:
+        """Counterfactual contribution: how much does `component` help
+        `superposition` align with `goal`?
+
+        delta = sim(superposition, goal) − sim(superposition − component, goal)
+
+        A positive delta means removing `component` HURTS goal alignment —
+        i.e. the component is a genuine contributor. Negative means it
+        opposes the goal. Near-zero means irrelevant."""
+        sup = self.get_vector_by_id(superposition_id)
+        comp = self.get_vector_by_id(component_id)
+        goal = self.get_vector_by_id(goal_id)
+        if sup is None or comp is None or goal is None:
+            return {"results": [], "confidence": 0.0,
+                    "audit": {"strategy": "a81_what_if",
+                              "reason": "missing_input_vector"}}
+        pipe_k = int(self._pipe.config().k)
+        sup_minus_comp = ehc.superpose([sup, ehc.negate(comp)], pipe_k)
+        sim_with = self.similarity(sup, goal)
+        sim_without = self.similarity(sup_minus_comp, goal)
+        delta = float(sim_with - sim_without)
+        impact = ("high" if abs(delta) > 0.10
+                  else "medium" if abs(delta) > 0.05
+                  else "low")
+        direction = "positive" if delta > 0 else "negative" if delta < 0 else "neutral"
+        return {
+            "results": [{
+                "component_id": str(component_id),
+                "delta_contribution": round(delta, 4),
+                "percentage": round(delta * 100, 2),
+                "impact": impact,
+                "direction": direction,
+                "sim_with_component": round(sim_with, 4),
+                "sim_without_component": round(sim_without, 4),
+            }],
+            "confidence": abs(round(delta, 4)),
+            "narrative": (
+                f"Component {component_id} has {impact} {direction} "
+                f"contribution (Δ={delta:.2%}) to goal alignment."),
+            "audit": {"strategy": "a81_what_if",
+                      "superposition_id": superposition_id,
+                      "component_id": component_id,
+                      "goal_id": goal_id},
+        }
+
+    # ── Phase 3 reasoning endpoint: abductive missing-link ────
+    # Given evidence E and target T, find hypothesis H such that T is
+    # explained by combining H with E. In BSC additive terms:
+    #   H ≈ T − E  →  the "residual" signal needed beyond what E already
+    #                 explains to reach T.
+    # Candidates are scored against H from a dictionary built from the
+    # nearest neighbors of E and T (the legacy approach — we reuse it
+    # because it's what the endpoint's downstream consumers expect).
+
+    def missing_link(self, evidence_id: int, target_id: int,
+                     top_k: int = 5,
+                     dictionary_size: int = 300) -> Dict[str, Any]:
+        """Abductive inference. Returns top_k hypothesis doc_ids ranked
+        by their similarity to the residual H = T − E.
+
+        The dictionary is the union of the `dictionary_size` nearest
+        neighbors of E and of T. Drawing candidates from both anchors
+        keeps the search space concentrated on plausible hypotheses and
+        avoids the whole-corpus blowup."""
+        e_vec = self.get_vector_by_id(evidence_id)
+        t_vec = self.get_vector_by_id(target_id)
+        if e_vec is None or t_vec is None:
+            return {"results": [], "confidence": 0.0,
+                    "audit": {"strategy": "a81_missing_link",
+                              "reason": "missing_input_vector"}}
+
+        # Residual hypothesis vector: what must combine with E to yield T.
+        pipe_k = int(self._pipe.config().k)
+        h_vec = ehc.superpose([t_vec, ehc.negate(e_vec)], pipe_k)
+
+        # Dictionary: neighbors of both E and T, dedup'd. Using knn_vec so
+        # the candidate set reflects what the LSH actually can route to
+        # (not a random slice of the corpus).
+        cand_ids: Dict[int, Dict[str, Any]] = {}
+        for anchor in (e_vec, t_vec):
+            for h in self.knn_vec(anchor, k=int(dictionary_size)):
+                did = int(h["doc_id"])
+                if did in (int(evidence_id), int(target_id)):
+                    continue
+                cand_ids.setdefault(did, h)
+        # Score each dictionary candidate against H.
+        scored: List[Tuple[int, float, Dict[str, Any]]] = []
+        for did, meta in cand_ids.items():
+            cv = self.get_vector_by_id(did)
+            if cv is None:
+                continue
+            s = self.similarity(h_vec, cv)
+            scored.append((did, s, meta["metadata"]))
+        scored.sort(key=lambda t: t[1], reverse=True)
+
+        results = [
+            {"id": str(did), "doc_id": did,
+             "similarity": round(float(s), 4),
+             "type": "hypothesis",
+             "metadata": md}
+            for (did, s, md) in scored[:int(top_k)]
+        ]
+        confidence = results[0]["similarity"] if results else 0.0
+        return {
+            "results": results,
+            "confidence": float(confidence),
+            "audit": {"strategy": "a81_missing_link",
+                      "evidence_id": evidence_id,
+                      "target_id": target_id,
+                      "dictionary_size": len(cand_ids)},
         }
 
     def _lookup(self, doc_id: int) -> Dict[str, Any]:
