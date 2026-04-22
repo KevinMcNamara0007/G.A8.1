@@ -120,6 +120,68 @@ def build_pipeline(cfg: Optional["ehc.StructuralConfig"] = None) -> "ehc.Structu
     return ehc.StructuralPipelineV13(cfg)
 
 
+def build_sro_tier1_config(
+    *,
+    dim: Optional[int] = None,
+    k: Optional[int] = None,
+    codebook_seed: Optional[int] = None,
+) -> "ehc.StructuralConfig":
+    """Validated StructuralPipelineV13 config for Tier-1 SRO corpora.
+
+    This is the production contract for atomic-triple corpora (Wikidata,
+    knowledge graphs, etc.) where the lookup key is `(subject, relation)`
+    and the object is the answer, not part of the key.
+
+    Contract (discovered empirically in session; see PlanC_v13_1_*):
+
+      1. Encode each record with text = `"{subject} {relation}"` (KEY only).
+      2. Keep the full `(s, r, o)` in a sidecar keyed by `doc_id`
+         (corpus.jsonl is the on-disk format; the edge shim reads it).
+      3. Query with text = `"{subject} {relation}"` — exact self-identity
+         match against the key.
+
+    Config choices:
+
+      - `remove_punct=False`, `use_stemming=False`, `remove_stopwords=False`:
+        preserve compound atomic tokens (`lalit_kumar_goel`,
+        `instance_of`) as single units. Underscores survive tokenization.
+      - `enable_hebbian=False`: on single-exposure corpora like Wikidata,
+        Hebbian learns noisy correlations (diagnostic showed 11% → 3%
+        Hit@1 when expansion is on vs off).
+      - `enable_bigram=True`, `enable_kv=True`: role binding is the
+        geometric source of the (s,r)-as-subspace property once the key
+        decoupling is in place.
+
+    Measured result at 5M: Hit@1 = 100%, p50 latency = 33 ms.
+    """
+    return build_config(
+        dim=dim, k=k, codebook_seed=codebook_seed,
+        max_slots=24,
+        enable_bigram=True,
+        enable_kv=True,
+        enable_hebbian=False,
+        lowercase=True,
+        remove_punct=False,
+        use_stemming=False,
+        remove_stopwords=False,
+    )
+
+
+def sro_tier1_encode_text(subject: str, relation: str) -> str:
+    """Return the KEY text to ingest for an SRO Tier-1 record.
+
+    Keeps punctuation and underscores so the C++ tokenizer treats
+    compound tokens (`lalit_kumar_goel`) as atomic.
+    """
+    return f"{subject} {relation}"
+
+
+def sro_tier1_query_text(subject: str, relation: str) -> str:
+    """Return the query text for an SRO Tier-1 lookup — identical shape
+    to the ingest text so query self-matches against its gold key."""
+    return f"{subject} {relation}"
+
+
 def load_pipeline(shard_dir: str) -> "ehc.StructuralPipelineV13":
     """Load a previously-persisted pipeline from a shard directory.
 

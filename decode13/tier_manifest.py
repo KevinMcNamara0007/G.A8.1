@@ -80,6 +80,12 @@ class ComponentVersions:
     structured: str = STRUCTURED_VERSION
     extraction_pipeline: str = ""
     emergent: str = ""
+    # v13.1 / PlanC — dimensions axis. Symbolic, not semantic.
+    #   v13.0 shards loaded without this field land on the sentinel
+    #   "v13.0-default" which query-time maps to D=16384 / k=128 for
+    #   the BSC cosine kernel. Profile-backed shards carry "D{n}:k{m}".
+    #   Hard axis in is_compatible_with — no partial match.
+    dimensions: str = "v13.0-default"
 
     def axes(self) -> List[str]:
         return list(self.__dataclass_fields__.keys())
@@ -129,6 +135,13 @@ class TierManifest:
     def from_dict(cls, d: Dict) -> "TierManifest":
         cp = d.get("components", {}) or {}
         cv = ComponentVersions.from_dict(cp) if isinstance(cp, dict) else ComponentVersions()
+        # Grandfather: if the stored components dict lacks `dimensions`,
+        # this is a pre-v13.1 shard. Force composite_hash recompute so it
+        # matches what a fresh v13.1 decode pipeline with
+        # dimensions="v13.0-default" produces. Option A from
+        # PlanC_v13_1_implementation.md §3.
+        is_legacy = isinstance(cp, dict) and "dimensions" not in cp
+        stored_hash = "" if is_legacy else d.get("composite_hash", "")
         return cls(
             tier=Tier(d.get("tier", Tier.EMERGENT_STRUCTURE.value)),
             components=cv,
@@ -138,8 +151,31 @@ class TierManifest:
             gate_agreement=bool(d.get("gate_agreement", False)),
             tenant_domain=d.get("tenant_domain", "default::default"),
             pipeline_version=d.get("pipeline_version", TIER_PIPELINE_VERSION),
-            composite_hash=d.get("composite_hash", ""),
+            composite_hash=stored_hash,
         )
+
+    def dimensions_dk(self) -> tuple[int, int]:
+        """Parse `components.dimensions` into (D, k) integers.
+
+        Handles:
+          - "v13.0-default"  → (16384, 128) hardcoded legacy geometry.
+          - "D{n}:k{m}"      → parsed values, validated positive.
+        Raises ValueError on malformed values."""
+        dim_str = self.components.dimensions
+        if dim_str == "v13.0-default":
+            return (16384, 128)
+        if dim_str.startswith("D") and ":k" in dim_str:
+            try:
+                d_part, k_part = dim_str.split(":k", 1)
+                d = int(d_part[1:])
+                k = int(k_part)
+                if d > 0 and k > 0:
+                    return (d, k)
+            except Exception:
+                pass
+        raise ValueError(
+            f"malformed dimensions axis: {dim_str!r} — "
+            f"expected 'v13.0-default' or 'D{{n}}:k{{m}}'")
 
     # ── compatibility ───────────────────────────────────────
     def is_compatible_with(
@@ -176,11 +212,20 @@ class TierManifest:
         extraction_confidence: float = 1.0,
         gate_agreement: bool = False,
         tenant_domain: str = "default::default",
+        dimensions: Optional[str] = None,
     ) -> "TierManifest":
+        # dimensions: caller passes the profile-derived axis string
+        # (e.g. "D16384:k128"). If None, we read A81_DIMENSIONS_AXIS
+        # from the environment — set by encode.py main() after profile
+        # loading — then fall back to the legacy sentinel.
+        if dimensions is None:
+            import os as _os
+            dimensions = _os.environ.get("A81_DIMENSIONS_AXIS", "v13.0-default")
         cv = ComponentVersions(
             possessive=symmetry.possessive_version,
             acronym=symmetry.acronym_hash,
             stopword=symmetry.stopword_hash,
+            dimensions=dimensions,
         )
         if tier == Tier.EXTRACTED_TRIPLE:
             cv.extractor = EXTRACTOR_VERSION

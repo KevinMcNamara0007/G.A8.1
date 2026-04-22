@@ -265,6 +265,7 @@ def parallel_encode_tier1(
     seed: int,
     n_workers: int = 8,
     tenant_domain: str = "default::default",
+    retain_vectors: bool = False,
 ) -> TierEncoder:
     """Encode via Tier 1 atomic in parallel. Returns a TierEncoder whose
     flat arrays + C++ indices are populated, ready for queries."""
@@ -301,11 +302,22 @@ def parallel_encode_tier1(
     cb_cfg = ehc.CodebookConfig(); cb_cfg.dim = dim; cb_cfg.k = k; cb_cfg.seed = seed
     # (codebook not needed for index build; just dim and k)
     idx = ehc.BSCCompactIndex(dim, use_sign_scoring=True)
-    lsh = ehc.BSCLSHIndex(dim, k, num_tables=8, hash_size=16, use_multiprobe=True)
+    # Auto-scale LSH hash_size with corpus size. Avg bucket stays ~10
+    # vectors as records grow from 100K to 100B. See
+    # config.resolve_lsh_hash_size for the table.
+    from config import resolve_lsh_hash_size
+    auto_hs = resolve_lsh_hash_size(n_total)
+    print(f"  [tier1] LSH hash_size auto-tuned → {auto_hs} "
+          f"(for n={n_total:,}; avg bucket ≈ "
+          f"{max(1, int(n_total / (2 ** auto_hs)))})", flush=True)
+    lsh = ehc.BSCLSHIndex(dim, k, num_tables=8,
+                          hash_size=auto_hs, use_multiprobe=True)
 
     # add_items in batches so we don't build a giant Python list.
     BATCH = 100_000
     ids = np.arange(n_total, dtype=np.int32)
+    retained_vecs: List = [] if retain_vectors else None
+    retained_ids: List[int] = [] if retain_vectors else None
     for bs in range(0, n_total, BATCH):
         be = min(bs + BATCH, n_total)
         bvs = []
@@ -326,6 +338,9 @@ def parallel_encode_tier1(
             bids = [ids[row] for row in range(bs, be) if int(nzlen[row]) > 0]
         idx.add_items(bvs, bids)
         lsh.add_items(bvs, bids)
+        if retain_vectors:
+            retained_vecs.extend(bvs)
+            retained_ids.extend(bids)
     print(f"  [tier1] index build: {time.perf_counter()-t_build:.1f}s")
 
     # Construct a thin TierEncoder wrapper that owns the flat arrays +
@@ -395,6 +410,12 @@ def parallel_encode_tier1(
 
     enc._index = idx
     enc._lsh = lsh
+    if retain_vectors:
+        # Sweep hook: caller can rebuild LSH with different (hash_size,
+        # num_tables) from these without re-encoding. Large memory cost
+        # (~4 GB at 5M, ~17 GB at 21M); default off.
+        enc._retained_vecs = retained_vecs
+        enc._retained_ids = retained_ids
     return enc
 
 
@@ -431,7 +452,14 @@ def parallel_encode_baseline(
 
     t_build = time.perf_counter()
     idx = ehc.BSCCompactIndex(dim, use_sign_scoring=True)
-    lsh = ehc.BSCLSHIndex(dim, k, num_tables=8, hash_size=16, use_multiprobe=True)
+    # Auto-scale LSH hash_size with corpus size (same rule as tier1).
+    from config import resolve_lsh_hash_size
+    auto_hs = resolve_lsh_hash_size(n_total)
+    print(f"  [baseline] LSH hash_size auto-tuned → {auto_hs} "
+          f"(for n={n_total:,}; avg bucket ≈ "
+          f"{max(1, int(n_total / (2 ** auto_hs)))})", flush=True)
+    lsh = ehc.BSCLSHIndex(dim, k, num_tables=8,
+                          hash_size=auto_hs, use_multiprobe=True)
 
     BATCH = 100_000
     ids = np.arange(n_total, dtype=np.int32)

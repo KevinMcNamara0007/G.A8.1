@@ -20,6 +20,10 @@ TESTS = [
     HERE / "tests" / "test_structured_atomic.py",
     HERE / "tests" / "test_extracted_triple.py",
     HERE / "tests" / "test_end_to_end.py",
+    # v13.1 corpus profiler (PlanC)
+    HERE / "tests" / "test_profile_schema.py",
+    HERE / "tests" / "test_profile_elbow.py",
+    HERE / "tests" / "test_profile_manifest.py",
 ]
 
 

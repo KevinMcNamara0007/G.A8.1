@@ -300,6 +300,69 @@ def worker_encode(args):
     out = Path(output_dir) / f"shard_{worker_id:04d}"
     out.mkdir(parents=True, exist_ok=True)
 
+    # ── Closed-loop canonicalization (plan §2.1) ─────────────
+    # When enabled, both encode and decode route tokens through the same
+    # CanonicalizationPipeline. Disabled by default; behavior unchanged.
+    try:
+        from config import cfg as _a81_cfg
+        _closed_loop = _a81_cfg.CLOSED_LOOP_ENABLED
+        _tier_routed = getattr(_a81_cfg, "TIER_ROUTED_ENABLED", False)
+    except ImportError:
+        _closed_loop = False
+        _tier_routed = False
+    # Tier-routed (v13, PlanB) supersedes closed-loop when enabled: Tier 1
+    # pass-through preserves compound tokens that closed-loop shattered.
+    # The tier router is loaded here so _resolve_tokens below can dispatch
+    # per-chunk; actual tier-routed encoding (TierEncoder / QueryService13
+    # for end-to-end tier semantics) is exercised by decode13/tests.
+    if _tier_routed:
+        _closed_loop = False
+    canonical_pipeline = None
+    canonical_manifest = None
+    tier_router = None
+    tier_pipelines = None
+    tier_registry = None
+    if _tier_routed:
+        _ga81_root = Path(__file__).resolve().parent.parent
+        if str(_ga81_root) not in sys.path:
+            sys.path.insert(0, str(_ga81_root))
+        from decode13 import (
+            TierRouter, StructuredAtomicPipeline,
+            ExtractionPipeline, EmergentStructureFallback,
+            ManifestRegistry13, TierManifest, Tier,
+        )
+        from canonical import CanonicalizationPipeline as _CP
+        canonical_pipeline = _CP()
+        canonical_manifest = canonical_pipeline.manifest
+        tier_router = TierRouter()
+        tier_pipelines = {
+            Tier.STRUCTURED_ATOMIC: StructuredAtomicPipeline(),
+            Tier.EXTRACTED_TRIPLE: ExtractionPipeline(
+                canonical=canonical_pipeline,
+                gate_mode=(_a81_cfg.TIER_GATE_MODE if _a81_cfg
+                           else "default")),
+            Tier.EMERGENT_STRUCTURE: EmergentStructureFallback(
+                canonical=canonical_pipeline),
+        }
+        _decode_m = TierManifest.from_symmetry(
+            canonical_manifest, tier=Tier.STRUCTURED_ATOMIC,
+            tenant_domain=(_a81_cfg.TIER_TENANT_DOMAIN if _a81_cfg
+                           else "default::default"),
+        )
+        tier_registry = ManifestRegistry13(_decode_m)
+        print(f"  [shard {worker_id:04d}] Tier-routed v13 ON "
+              f"(gate={_a81_cfg.TIER_GATE_MODE if _a81_cfg else 'default'})")
+    if _closed_loop:
+        # canonical/ lives next to config.py at G.A8.1 root
+        _ga81_root = Path(__file__).resolve().parent.parent
+        if str(_ga81_root) not in sys.path:
+            sys.path.insert(0, str(_ga81_root))
+        from canonical import CanonicalizationPipeline
+        canonical_pipeline = CanonicalizationPipeline()
+        canonical_manifest = canonical_pipeline.manifest
+        print(f"  [shard {worker_id:04d}] Closed-loop ON "
+              f"(pipeline={canonical_manifest.pipeline_version})")
+
     # Load pickle
     chunks = []
     with open(chunk_pkl_path, "rb") as f:
@@ -342,9 +405,35 @@ def worker_encode(args):
             else:
                 cluster_centroids.append(None)
 
+    # ── Canonical pre-pass: run pipeline once per chunk so every stage
+    #    downstream (IDF, salience, encoding) sees the canonical stream ─
+    canonical_tokens_by_idx: list = []
+    if canonical_pipeline is not None:
+        for c in chunks:
+            s = c.get("subject", "")
+            r = c.get("relation", "")
+            o = c.get("object", c.get("text", ""))
+            stream = canonical_pipeline.canonicalize(
+                subject=s, relation=r, obj=o)
+            canonical_tokens_by_idx.append(stream.tokens)
+
     # ── Load global IDF (computed across full corpus by orchestrator) ─
     idf_path = Path(output_dir) / "_chunks" / "_global_idf.json"
-    if idf_path.exists():
+    if canonical_pipeline is not None:
+        # Closed-loop mode: IDF must be over canonical vocabulary, not raw
+        # tokens (the encoder never sees raw tokens). Rebuild per-shard.
+        from collections import Counter as _Counter
+        import math as _math
+        _doc_freq = _Counter()
+        for toks in canonical_tokens_by_idx:
+            for t in set(toks):
+                _doc_freq[t] += 1
+        _n_docs = max(len(canonical_tokens_by_idx), 1)
+        idf = {t: _math.log(_n_docs / max(df, 1))
+               for t, df in _doc_freq.items()}
+        print(f"  [shard {worker_id:04d}] Canonical IDF: {len(idf):,} tokens "
+              f"(closed-loop)")
+    elif idf_path.exists():
         with open(idf_path) as f:
             idf = json.load(f)
         print(f"  [shard {worker_id:04d}] Global IDF: {len(idf):,} tokens")
@@ -426,7 +515,74 @@ def worker_encode(args):
         s = c.get("subject", "")
         r = c.get("relation", "")
         o = c.get("object", c.get("text", ""))
-        all_tokens = _tokenize(s) + _tokenize(r) + _tokenize(o)
+        _chunk_tier = None
+        _chunk_triples = []
+        _chunk_gate = True
+        _chunk_conf = 1.0
+        if tier_router is not None:
+            # v13 tier-routed: dispatch based on input shape. Tier 1 binds
+            # compound tokens atomically (preserves joe_misiti etc.); Tier 2
+            # extracts atomic triples from free text; Tier 3 falls back to
+            # canonical bag-of-concepts.
+            #
+            # JSONL ingest (encode.py) synthesizes a fake triple with
+            # subject=author, relation=site_plus_tags, object=raw_text.
+            # That would mis-classify as Tier 1. Detect the synthetic
+            # shape via `_sidecar.message_text_translated` and force
+            # Tier 2 extraction on the actual message text instead.
+            _sc = c.get("_sidecar") or {}
+            _is_synth_from_msg = bool(_sc.get("message_text_translated"))
+            if _is_synth_from_msg:
+                # Route purely on the free text field.
+                _tweet_text = _sc.get("message_text_translated") or o
+                _chunk_tier = tier_router.classify(
+                    text=_tweet_text, explicit_sro=False,
+                )
+            else:
+                _chunk_tier = tier_router.classify(
+                    subject=s, relation=r, obj=o if c.get("object") else "",
+                    text=c.get("text", "") if not c.get("object") else "",
+                    explicit_sro=c.get("_explicit_sro"),
+                )
+            pipe = tier_pipelines[_chunk_tier]
+            if _chunk_tier == Tier.STRUCTURED_ATOMIC:
+                dec = pipe.emit(subject=s, relation=r, obj=o)
+            elif _chunk_tier == Tier.EXTRACTED_TRIPLE:
+                _src_text = (_sc.get("message_text_translated")
+                             if _is_synth_from_msg
+                             else (o or c.get("text", "")))
+                _anchor = None if _is_synth_from_msg else s
+                dec = pipe.extract(_src_text, anchor_subject=_anchor)
+            else:
+                _src_text = (_sc.get("message_text_translated")
+                             if _is_synth_from_msg
+                             else (o or c.get("text", "")))
+                dec = pipe.emit(_src_text)
+            _chunk_tier = dec.tier
+            _chunk_triples = dec.triples
+            _chunk_conf = dec.confidence
+            if dec.triples:
+                # For multi-triple inputs we concat the triples' tokens into
+                # one vector here; the end-to-end TierEncoder (decode13/)
+                # emits one vector per triple. This shard path emits one
+                # vector per chunk to preserve sidecar alignment.
+                all_tokens = []
+                _chunk_gate = True
+                for tri in dec.triples:
+                    for tok in (tri.subject, tri.relation, tri.obj):
+                        if tok and tok not in all_tokens:
+                            all_tokens.append(tok)
+                    _chunk_gate = _chunk_gate and tri.gate_agreement
+            elif dec.fallback_tokens:
+                all_tokens = list(dec.fallback_tokens)
+                _chunk_gate = False
+            else:
+                all_tokens = []
+        elif canonical_pipeline is not None:
+            # Closed-loop: consume the canonical stream computed above
+            all_tokens = canonical_tokens_by_idx[i]
+        else:
+            all_tokens = _tokenize(s) + _tokenize(r) + _tokenize(o)
         if not all_tokens:
             continue
 
@@ -472,6 +628,22 @@ def worker_encode(args):
         if media_vec is not None:
             media_vecs.append((n_encoded, media_vec))
             n_media_encoded += 1
+
+        # ── v13 per-vector TierManifest registration ──────────
+        if tier_registry is not None and _chunk_tier is not None:
+            tm = TierManifest.from_symmetry(
+                canonical_manifest,
+                tier=_chunk_tier,
+                extractor=(_chunk_triples[0].extractor
+                           if _chunk_triples else "emergent_fallback"),
+                ner_model=("heuristic-ner-v1"
+                           if _chunk_tier == Tier.EXTRACTED_TRIPLE else "none"),
+                extraction_confidence=_chunk_conf,
+                gate_agreement=_chunk_gate,
+                tenant_domain=(_a81_cfg.TIER_TENANT_DOMAIN if _a81_cfg
+                               else "default::default"),
+            )
+            tier_registry.register(n_encoded, tm)
 
         n_encoded += 1
 
@@ -673,6 +845,17 @@ def worker_encode(args):
     import shutil
     shutil.rmtree(str(mm_dir), ignore_errors=True)
 
+    # ── SymmetryManifest (plan §2.2) ─────────────────────────
+    # Record which canonicalization rules produced these vectors so the
+    # decode path can detect drift at query time. Written even when
+    # closed-loop is off — consumers treat absence as "legacy" shard.
+    if canonical_manifest is not None:
+        canonical_manifest.save(out / "symmetry_manifest.json")
+
+    # ── TierManifest registry (v13, PlanB §4) ────────────────
+    if tier_registry is not None:
+        tier_registry.save(out / "tier_manifest.json")
+
     elapsed = time.perf_counter() - t0
     manifest = {
         "worker_id": worker_id,
@@ -685,7 +868,10 @@ def worker_encode(args):
         "k": k,
         "elapsed_s": round(elapsed, 1),
         "rate_per_sec": round(n_encoded / elapsed, 1) if elapsed > 0 else 0,
+        "closed_loop": canonical_manifest is not None,
     }
+    if canonical_manifest is not None:
+        manifest["symmetry"] = canonical_manifest.to_dict()
     with open(out / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
 

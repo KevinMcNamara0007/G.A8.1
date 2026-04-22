@@ -40,8 +40,11 @@ from .query_service import QueryService as QueryServiceV13, ShardData13, QueryHi
 from .structural_encoder import (
     build_config as build_structural_config,
     build_pipeline as build_structural_pipeline,
+    build_sro_tier1_config,
     load_pipeline as load_structural_pipeline,
     save_pipeline as save_structural_pipeline,
+    sro_tier1_encode_text,
+    sro_tier1_query_text,
 )
 
 __all__ = [
@@ -65,6 +68,9 @@ __all__ = [
     "QueryHit13",
     "build_structural_config",
     "build_structural_pipeline",
+    "build_sro_tier1_config",
     "load_structural_pipeline",
     "save_structural_pipeline",
+    "sro_tier1_encode_text",
+    "sro_tier1_query_text",
 ]

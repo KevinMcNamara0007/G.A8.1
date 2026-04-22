@@ -688,16 +688,39 @@ def main():
         _eb = _c.ENTITY_BUCKETS
         # 0 or unset → cap at CPU_FRACTION * cores. Explicit WAVES wins.
         _waves = _c.WAVES if _c.WAVES and _c.WAVES > 0 else _rw(0)
+        _cfg = _c
     except ImportError:
         _dim, _k, _eb, _waves = 16384, 128, 36, 9
+        _cfg = None
     p.add_argument("--clusters", required=True, help="Path to clusters.json")
     p.add_argument("--entity-buckets", type=int, default=_eb)
     p.add_argument("--waves", type=int, default=_waves)
-    p.add_argument("--dim", type=int, default=_dim)
-    p.add_argument("--k", type=int, default=_k)
+    # --dim / --k are optional sentinels. None means "resolve from profile
+    # or cfg". Explicit values stamp override=cli on the manifest.
+    p.add_argument("--dim", type=int, default=None,
+                   help="Override profile dim. Explicit value stamps override=cli.")
+    p.add_argument("--k", type=int, default=None,
+                   help="Override profile k. Explicit value stamps override=cli.")
+    p.add_argument("--no-profile", action="store_true",
+                   help="Skip profile loading — use cfg defaults. Not for prod.")
+    p.add_argument("--force-profile", action="store_true",
+                   help="Proceed even if profile source_hash mismatches source.")
     p.add_argument("--media-dir", type=str, default=None,
                    help="Media directory for image/video files (auto-detected if omitted)")
     args = p.parse_args()
+
+    # ── v13.1 profile resolution ─────────────────────────────────
+    #
+    # State matrix from PlanC §6.2 + CLI override semantics from the
+    # review. The resolved (dim, k) and a provenance string are both
+    # handed to run_encode; the provenance is also exported as
+    # A81_DIMENSIONS_AXIS so worker_encode.py stamps it into the
+    # TierManifest without a second plumbing round-trip.
+    eff_dim, eff_k, axis_value, provenance = _resolve_dk(args, _cfg)
+    os.environ["A81_DIMENSIONS_AXIS"] = axis_value
+    os.environ["A81_DIMENSIONS_PROVENANCE"] = provenance
+    print(f"  [encode] dim={eff_dim} k={eff_k} axis={axis_value} "
+          f"provenance={provenance}")
 
     run_encode(
         source=args.source,
@@ -705,10 +728,112 @@ def main():
         clusters_path=args.clusters,
         n_entity_buckets=args.entity_buckets,
         waves=args.waves,
-        dim=args.dim,
-        k=args.k,
+        dim=eff_dim,
+        k=eff_k,
         media_dir=args.media_dir,
     )
+
+
+def _resolve_dk(args, _cfg):
+    """Apply the PlanC §6.2 state matrix.
+
+    Returns `(dim, k, axis_value, provenance)`:
+      - `axis_value`: stamped into TierManifest.components.dimensions.
+      - `provenance`: one of "profile", "cli", "legacy_default".
+
+    Aborts the process with a remediation message on mismatch cases.
+    """
+    profile_required = bool(_cfg.DIMENSIONS_PROFILE_REQUIRED) if _cfg else True
+    legacy_sentinel = (_cfg.DIMENSIONS_LEGACY_SENTINEL
+                       if _cfg else "v13.0-default")
+    trivial = int(_cfg.DIMENSIONS_TRIVIAL_THRESHOLD) if _cfg else 10_000
+    cfg_dim = int(_cfg.DIM) if _cfg else 16384
+    cfg_k = int(_cfg.K) if _cfg else 128
+
+    # Locate profile path. Convention: sits next to the output dir.
+    profile_path = Path(args.output) / "corpus_profile.json"
+
+    # Try to import the profile loader. Missing is fatal for prod
+    # (profile_required) when corpus is large; otherwise we proceed
+    # with cfg defaults and stamp the legacy sentinel.
+    try:
+        from decode13.profile import load_profile, compute_source_hash
+    except Exception as e:
+        print(f"  [encode] profile loader unavailable ({e}) — "
+              f"falling back to cfg defaults", file=sys.stderr)
+        load_profile = None  # type: ignore
+
+    profile = None
+    if load_profile is not None and profile_path.exists() and not args.no_profile:
+        try:
+            profile = load_profile(profile_path)
+        except Exception as e:
+            print(f"  [encode] profile at {profile_path} failed to load: {e}",
+                  file=sys.stderr)
+            sys.exit(3)
+
+    # CLI overrides (partial is allowed; missing half fills from
+    # profile if available, else cfg).
+    cli_dim = args.dim
+    cli_k = args.k
+    if cli_dim is not None or cli_k is not None:
+        base_dim = (profile.recommended_dim if profile else cfg_dim)
+        base_k = (profile.recommended_k if profile else cfg_k)
+        d = int(cli_dim) if cli_dim is not None else int(base_dim)
+        k = int(cli_k) if cli_k is not None else int(base_k)
+        return d, k, f"D{d}:k{k}", "cli"
+
+    # No CLI override. Handle profile/absent cases.
+    if profile is not None:
+        # Check source_hash. If absent or mismatch without --force-profile, abort.
+        try:
+            # Not calling matches_source because we want to print the
+            # mismatch detail for operators.
+            from decode13.profile import compute_source_hash
+            observed = compute_source_hash(str(Path(args.source).resolve()),
+                                           _count_lines(args.source))
+        except Exception:
+            observed = None
+        if observed and profile.source_hash and observed != profile.source_hash:
+            if not args.force_profile:
+                print(f"  [encode] profile source_hash mismatch "
+                      f"(profile={profile.source_hash[:16]}… "
+                      f"observed={observed[:16]}…). "
+                      f"Re-run `python -m encode.profile` or pass "
+                      f"--force-profile to override.", file=sys.stderr)
+                sys.exit(4)
+            print("  [encode] --force-profile set; ignoring source_hash mismatch.",
+                  file=sys.stderr)
+        d, k = int(profile.recommended_dim), int(profile.recommended_k)
+        return d, k, f"D{d}:k{k}", "profile"
+
+    # No profile, no CLI override.
+    if profile_required and not args.no_profile:
+        # Need to know corpus size to decide trivial vs abort.
+        count = _count_lines(args.source)
+        if count > trivial:
+            print(f"  [encode] {count} records > trivial threshold "
+                  f"({trivial}) and no profile at {profile_path}. "
+                  f"Run `python -m encode.profile --source {args.source} "
+                  f"--output {args.output}` first, or pass --no-profile "
+                  f"to use cfg defaults (stamps legacy sentinel).",
+                  file=sys.stderr)
+            sys.exit(5)
+    # Trivial corpus, or --no-profile: cfg defaults, legacy sentinel.
+    return cfg_dim, cfg_k, legacy_sentinel, "legacy_default"
+
+
+def _count_lines(source: str) -> int:
+    """Fast JSONL line count. Streams bytes; no record parsing."""
+    n = 0
+    try:
+        with open(source, "rb") as f:
+            for line in f:
+                if line.strip():
+                    n += 1
+    except Exception:
+        return 0
+    return n
 
 
 if __name__ == "__main__":

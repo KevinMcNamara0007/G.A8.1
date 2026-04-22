@@ -107,6 +107,23 @@ class Config:
     #   A81_WAVES explicitly — explicit values always win.
     CPU_FRACTION:   float = _env("A81_CPU_FRACTION", 0.8, float)
 
+    # ── Corpus Profiler v13.1 (PlanC) ────────────────────
+    #   Pre-encode dimensionality calibration. When PROFILE_REQUIRED is
+    #   True, encode aborts on corpora above TRIVIAL_THRESHOLD if no
+    #   corpus_profile.json is found next to the target index dir.
+    DIMENSIONS_PROFILE_REQUIRED: bool = _env("A81_DIMENSIONS_PROFILE_REQUIRED", True, bool)
+    DIMENSIONS_HEADROOM:         float = _env("A81_DIMENSIONS_HEADROOM", 1.2, float)
+    DIMENSIONS_TRIVIAL_THRESHOLD: int  = _env("A81_DIMENSIONS_TRIVIAL_THRESHOLD", 10_000, int)
+    #   Extended grid adds 6144 and 12288 to the power-of-2 base grid.
+    #   Gated off by default pending EHC C++ review — non-power-of-2 D
+    #   may crash the BSC kernel. See PlanC_cpp_engineer_memo.md.
+    DIMENSIONS_GRID_EXTENDED:    bool  = _env("A81_DIMENSIONS_GRID_EXTENDED", False, bool)
+    DIMENSIONS_PROFILE_SAMPLE:   int   = _env("A81_DIMENSIONS_PROFILE_SAMPLE", 10_000, int)
+    DIMENSIONS_PROFILE_QUERIES:  int   = _env("A81_DIMENSIONS_PROFILE_QUERIES", 200, int)
+    #   Sentinel stamped on v13.0-era shards that predate the dimensions
+    #   axis. Query-time runtime maps it to the hardcoded D=16384/k=128.
+    DIMENSIONS_LEGACY_SENTINEL:  str   = _env("A81_DIMENSIONS_LEGACY_SENTINEL", "v13.0-default")
+
     # ── Paths ────────────────────────────────────────────
     SOURCE_PATH:    str = _env("A81_SOURCE_PATH", "")
     INDEX_PATH:     str = _env("A81_INDEX_PATH", "")
@@ -131,6 +148,34 @@ class Config:
 
 # Singleton
 cfg = Config()
+
+
+def resolve_lsh_hash_size(n_records: int) -> int:
+    """Auto-tune LSH hash_size so average bucket holds ~10 vectors.
+
+    Derivation:  hash_size = ceil(log2(n_records / 10)), clamped [14, 28].
+
+    The clamp:
+      - Floor 14 matches the v13.0 default (safe for corpora < ~160K).
+      - Ceiling 28 = 2^28 = 268M buckets. Above ~100B records buckets
+        unavoidably over-fill — tune more LSH tables instead.
+
+    Reference table (records → hash_size → avg vec/bucket):
+        100K   → 14   (6 vec/bucket)
+        1M     → 17   (8 vec/bucket)
+        10M    → 20   (10 vec/bucket)
+        100M   → 24   (6 vec/bucket)
+        1B     → 27   (7 vec/bucket)
+        100B   → 28   (373 vec/bucket — at the clamp ceiling)
+
+    The 21M Wikidata regression lived at the 20 line. Old default of
+    16 put 325 vectors/bucket → LSH multiprobe effectively scanned a
+    huge chunk of the corpus → ~60s query latency at k=90.
+    """
+    if n_records <= 0:
+        return 16
+    ideal = math.ceil(math.log2(max(1, n_records / 10.0)))
+    return max(14, min(28, int(ideal)))
 
 
 def resolve_workers(requested: int = 0, *, minimum: int = 1) -> int:

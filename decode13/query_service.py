@@ -122,6 +122,30 @@ class ShardData13:
             ManifestRegistry13.load(tm_path) if tm_path.exists() else None
         )
 
+        # v13.1 dimensions-axis verification (PlanC). If the shard's
+        # manifest carries a dimensions string we can parse, compare
+        # to the caller's (dim, k). Legacy "v13.0-default" resolves
+        # to (16384, 128) via dimensions_dk() so pre-v13.1 shards
+        # load cleanly when the caller is still on the default
+        # geometry. Mismatch is a hard abort — BSC cosine requires
+        # dimensional consistency; letting a mismatched shard
+        # silently return wrong answers is the worst failure mode.
+        if self.tier_registry is not None:
+            dec = self.tier_registry.decode_manifest
+            try:
+                mdim, mk = dec.dimensions_dk()
+            except ValueError as e:
+                raise RuntimeError(
+                    f"shard {self.shard_id}: {e}. Shard is malformed or "
+                    f"was written by an incompatible v13.1 build.")
+            if (mdim, mk) != (int(dim), int(k)):
+                raise RuntimeError(
+                    f"shard {self.shard_id} dimensions-axis mismatch: "
+                    f"manifest says D={mdim} k={mk}, caller loaded with "
+                    f"D={dim} k={k}. Re-profile + re-encode the shard at "
+                    f"the caller's (D, k), or load the service with the "
+                    f"shard's geometry. BSC cosine cannot cross dim boundaries.")
+
     @staticmethod
     def _load_compact_index(npz_path: Path, dim: int):
         d = np.load(str(npz_path), allow_pickle=True)

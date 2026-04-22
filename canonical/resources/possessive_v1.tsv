@@ -1,0 +1,8 @@
+# G.A8.1 canonical possession rule set v1
+# Rules are applied by regex on whole tokens. Each rule emits a canonical
+# form and an alternate surface form so encode and decode both retain
+# "user's wallet" and "user wallet" as the same semantic content.
+# Format: <rule_id>\t<regex>\t<canonical_group>
+# Locked for manifest v1.
+trailing_apostrophe_s	^(.+)'s$	\1
+leading_apostrophe_s	^(.+)s'$	\1s

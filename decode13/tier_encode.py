@@ -332,17 +332,27 @@ class TierEncoder:
     def build_index(
         self,
         lsh_tables: int = 8,
-        lsh_hash_size: int = 16,
+        lsh_hash_size: Optional[int] = None,
         use_lsh: bool = True,
     ) -> None:
+        """Build the BSC compact + LSH indices.
+
+        `lsh_hash_size=None` (the default) auto-scales with corpus size
+        via config.resolve_lsh_hash_size so the average bucket stays
+        ~10 vectors from 100K → 100B records. Pass an explicit int to
+        override (useful for reproducing historical runs).
+        """
         self._index = ehc.BSCCompactIndex(self.dim, use_sign_scoring=True)
         if self._pending_vecs:
             self._index.add_items(self._pending_vecs, self._pending_ids)
 
         if use_lsh and self._pending_vecs:
+            if lsh_hash_size is None:
+                from config import resolve_lsh_hash_size
+                lsh_hash_size = resolve_lsh_hash_size(self.n_vectors)
             self._lsh = ehc.BSCLSHIndex(
                 self.dim, self.k,
-                num_tables=lsh_tables, hash_size=lsh_hash_size,
+                num_tables=lsh_tables, hash_size=int(lsh_hash_size),
                 use_multiprobe=True,
             )
             self._lsh.add_items(self._pending_vecs, self._pending_ids)

@@ -146,6 +146,9 @@ def main():
                          "always off-by-default at >1M scale).")
     ap.add_argument("--workers", type=int, default=8,
                     help="Encode workers (multiprocessing.Pool, fork).")
+    ap.add_argument("--warmup", type=int, default=20,
+                    help="Throwaway queries before measurement to warm caches "
+                         "and amortize cold-page I/O. 0 disables.")
     ap.add_argument("--query-threads", type=int, default=8,
                     help="Concurrent queries via ThreadPoolExecutor.")
     ap.add_argument("--serial", action="store_true",
@@ -160,8 +163,15 @@ def main():
     triples = _load_sample(TRIPLES_PATH, args.n_triples, args.seed)
     print(f"  loaded {len(triples):,} in {time.perf_counter()-t0:.1f}s")
 
-    queries = _sample_queries(triples, args.n_queries, args.seed + 1)
-    print(f"  sampled {len(queries)} unique-(s,r) queries")
+    # Sample benchmark + warmup queries together, then split. Warmup set
+    # is disjoint from the measured set so we're not double-timing the
+    # same records.
+    total_needed = args.n_queries + max(0, args.warmup)
+    all_queries = _sample_queries(triples, total_needed, args.seed + 1)
+    queries = all_queries[:args.n_queries]
+    warmup_queries = all_queries[args.n_queries:args.n_queries + args.warmup]
+    print(f"  sampled {len(queries)} unique-(s,r) queries "
+          f"(+ {len(warmup_queries)} warmup)")
     if not queries:
         print("NO UNIQUE QUERIES — bump --n-triples")
         return 1
@@ -203,6 +213,20 @@ def main():
     # ── Query both ──
     print(f"\n── Running {len(queries)} queries (threads={args.query_threads}) ──")
     svc = QueryService13(t1_enc)
+
+    if warmup_queries:
+        print(f"  [warmup] running {len(warmup_queries)} throwaway queries "
+              f"(timing discarded)…", flush=True)
+        t_warm = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=args.query_threads) as ex:
+            def _warm_one(item):
+                _, (_rid, s, r, _o) = item
+                svc.query(subject=s, relation=r, k=args.top_k, explicit_sro=True)
+                base_enc.query(subject=s, relation=r, k=args.top_k)
+            # exhaust the map iterator
+            list(ex.map(_warm_one, list(enumerate(warmup_queries))))
+        print(f"  [warmup] done in {time.perf_counter()-t_warm:.1f}s",
+              flush=True)
 
     def run_one(item):
         i, (rid, s, r, o) = item

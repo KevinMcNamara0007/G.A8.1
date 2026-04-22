@@ -1,0 +1,25 @@
+# G.A8.1 canonical acronym table v1
+# Format: <acronym>\t<expansion>   (tab-separated, one pair per line)
+# Locked for manifest v1. Bump to acronyms_v2.tsv for any change.
+# Start with a small, high-confidence set — corpus-frequency analysis (v13.1)
+# will drive additions.
+ml	machine learning
+ai	artificial intelligence
+nlp	natural language processing
+srl	semantic role labeling
+ner	named entity recognition
+gpu	graphics processing unit
+cpu	central processing unit
+api	application programming interface
+url	uniform resource locator
+sql	structured query language
+os	operating system
+ui	user interface
+ux	user experience
+io	input output
+db	database
+kb	knowledge base
+lm	language model
+llm	large language model
+rag	retrieval augmented generation
+iot	internet of things
