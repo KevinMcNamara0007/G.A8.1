@@ -25,6 +25,75 @@ python -m decode13.benchmark.build_edge_queries \
 **For SRO Tier-1 corpora**, autotune uses unique-(s,r) self-identity
 as the oracle — no operator queries needed.
 
+## How to run (canonical commands)
+
+Paths follow the `/MOE/<EXPERT>/` convention. Legacy `/OUT*` dirs are
+deprecated; do not recreate them.
+
+### Encode SRO triples (Tier-1)
+```bash
+cd /Users/stark/Quantum_Computing_Lab/G.A8.1
+python3 -m encode.encode_triples \
+    --source /Users/stark/Quantum_Computing_Lab/GoldC/triples_21M.json \
+    --output /Users/stark/Quantum_Computing_Lab/MOE/WIKI \
+    --force
+```
+Autotune oracle is built-in (unique-(s,r) self-identity). No operator
+queries needed.
+
+### Encode narrative text (Tier-2) — two steps
+```bash
+# 1. Build the operator-query oracle from the source corpus
+cd /Users/stark/Quantum_Computing_Lab/G.A8.1
+python3 -m decode13.benchmark.build_edge_queries \
+    --source /Users/stark/Quantum_Computing_Lab/MOE/EDGE/source_corpus.jsonl \
+    --output /Users/stark/Quantum_Computing_Lab/MOE/EDGE/operator_queries.jsonl
+
+# 2. Encode with those queries scoring the autotune sweep
+python3 -m encode.encode_unstructured \
+    --source /Users/stark/Quantum_Computing_Lab/MOE/EDGE/source_corpus.jsonl \
+    --output /Users/stark/Quantum_Computing_Lab/MOE/EDGE \
+    --operator-queries /Users/stark/Quantum_Computing_Lab/MOE/EDGE/operator_queries.jsonl \
+    --force
+```
+**Skipping `--operator-queries` on narrative corpora drops Hit@1 to the
+synthetic-oracle ceiling (~20% vs 52%).** Always generate operator
+queries first. For non-edge domains, copy `build_edge_queries.py` and
+edit the `QUERIES` list for your vocabulary.
+
+### Skip autotune (known-good pin)
+```bash
+python3 -m encode.encode_{triples|unstructured} \
+    --source ... --output ... \
+    --dim 4096 --k 64 --no-autotune
+```
+
+### Benchmark an encoded shard
+```bash
+python3 -m decode13.benchmark.run \
+    --index-path /Users/stark/Quantum_Computing_Lab/MOE/EDGE \
+    --queries   /Users/stark/Quantum_Computing_Lab/MOE/EDGE/operator_queries.jsonl \
+    --warmup 20
+```
+
+### Wire a shard to the edge service
+`start.sh` in `MjolnirPhotonics/product.edge.analyst.bsc/edge_service/`
+reads `A81_INDEX_PATH`. Default is `/MOE/EDGE`. To point at a different
+expert, export before starting:
+```bash
+cd MjolnirPhotonics/product.edge.analyst.bsc/edge_service
+export A81_INDEX_PATH=/Users/stark/Quantum_Computing_Lab/MOE/WIKI
+./stop.sh && ./start.sh
+```
+The service imports G.A8.1 in-process via the shim at
+`decode/query.py` (with `query_service.py` as back-compat fallback).
+
+### What each encode produces in `<output>/`
+  - `structural_v13/`    — saved EH pipeline (weights + config)
+  - `corpus.jsonl`       — sidecar, one row per encoded doc, id-ordered
+  - `corpus_profile.json`— atom histogram + p99 + autotune sweep result
+  - (autotune run also appends a section to this file — `universal_constants.md`)
+
 ---
 
 ## OUT-EDGE-NEW
