@@ -128,31 +128,22 @@ def parse_args():
 
 
 def _stream_triples(source: Path):
-    """Yield (subject, relation, object, full_record_dict) for each JSONL line."""
-    with open(source, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            yield (
-                rec.get("subject", "") or "",
-                rec.get("relation", "") or "",
-                rec.get("object", "") or "",
-                rec,
-            )
+    """Yield (subject, relation, object, full_record_dict) per source
+    record. Source may be JSONL *or* a single JSON array (Wikidata /
+    DBpedia dumps ship that way); format is auto-detected by `_io`."""
+    from ._io import iter_json_records
+    for rec in iter_json_records(source):
+        yield (
+            rec.get("subject", "") or "",
+            rec.get("relation", "") or "",
+            rec.get("object", "") or "",
+            rec,
+        )
 
 
 def _count_records(source: Path) -> int:
-    n = 0
-    with open(source, "rb") as f:
-        for line in f:
-            if line.strip():
-                n += 1
-    return n
+    from ._io import count_records
+    return count_records(source)
 
 
 def autotune_dk(source: Path, output: Path, full_grid: List[int],

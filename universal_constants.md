@@ -88,6 +88,15 @@ export A81_INDEX_PATH=/Users/stark/Quantum_Computing_Lab/MOE/WIKI
 The service imports G.A8.1 in-process via the shim at
 `decode/query.py` (with `query_service.py` as back-compat fallback).
 
+### Source-file formats (auto-detected)
+Both encoders accept either:
+  - **JSONL** — one JSON object per line (the default staging format)
+  - **JSON array** — a single `[{...}, {...}, ...]` file (Wikidata / DBpedia
+    dumps ship this way; parse streams from disk in constant memory)
+
+No pre-conversion step. Detection is by peeking the first non-whitespace
+character. Implementation in `encode/_io.py::iter_json_records`.
+
 ### What each encode produces in `<output>/`
   - `structural_v13/`    — saved EH pipeline (weights + config)
   - `corpus.jsonl`       — sidecar, one row per encoded doc, id-ordered
@@ -213,6 +222,23 @@ The service imports G.A8.1 in-process via the shim at
   | 16384 | 128 | 28.00% | 1.98 |
   | 32768 | 181 | 44.00% | 2.27 |
 - **Winner**: D=4096, k=64, Hit@1=52.00%, p50=0.74 ms
+
+---
+
+## WIKI
+- **Date**: 2026-04-24T13:05:38+00:00
+- **Encoder**: `encode_triples`
+- **Source**: `/Users/stark/Quantum_Computing_Lab/MOE/WIKI/source_corpus.jsonl`
+- **Records**: 977,051
+- **p99 atoms/record**: 2
+- **Predicted zone**: [4096, 8192]  (atomic SRO regime)
+- **Swept zone**: [4096, 8192]
+- **Sweep results**:
+  | D | k | Hit@1 | p50 ms |
+  |---:|---:|---:|---:|
+  | 4096 | 64 | 100.00% | 7.33 | ← winner
+  | 8192 | 91 | 100.00% | 10.42 |
+- **Winner**: D=4096, k=64, Hit@1=100.00%, p50=7.33 ms
 
 ---
 

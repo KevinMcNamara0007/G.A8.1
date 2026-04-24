@@ -131,21 +131,15 @@ def parse_args():
 
 
 def _stream_records(source: Path):
-    """Yield (text, full_record_dict) per JSONL line. Records without a
-    non-empty 'text' field are skipped."""
-    with open(source, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            text = (rec.get("text", "") or "").strip()
-            if not text:
-                continue
-            yield text, rec
+    """Yield (text, full_record_dict) per source record. Source may be
+    JSONL *or* a single JSON array; format is auto-detected by `_io`.
+    Records without a non-empty 'text' field are skipped."""
+    from ._io import iter_json_records
+    for rec in iter_json_records(source):
+        text = (rec.get("text", "") or "").strip()
+        if not text:
+            continue
+        yield text, rec
 
 
 def _count_records(source: Path) -> int:

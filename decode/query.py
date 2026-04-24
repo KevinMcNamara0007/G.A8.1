@@ -522,6 +522,14 @@ class QueryService:
             u = rec.get("url", "")
             if _looks_like_media(u):
                 media_url = u
+        # Edge-shape fields surface by name; everything else in the source
+        # record is passed through so domain-specific fields (e.g. SRO
+        # subject/relation/object, wiki categories, log level) reach the
+        # caller without a shim update.
+        passthrough = {k: v for k, v in rec.items()
+                       if k not in ("doc_id", "text", "raw", "author",
+                                    "site", "timestamp", "media_url",
+                                    "url", "msg_id", "native_id")}
         return {
             "text":      rec.get("text", ""),
             "raw":       rec.get("raw", ""),
@@ -530,10 +538,9 @@ class QueryService:
             "timestamp": rec.get("timestamp", ""),
             "media_url": media_url,
             "url":       rec.get("url", ""),
-            # Native ids so the UI can resolve back to the source record
-            # via the edge service's existing msg_id / native_id lookups.
             "msg_id":    rec.get("msg_id", ""),
             "native_id": rec.get("native_id", ""),
+            **passthrough,
         }
 
 
