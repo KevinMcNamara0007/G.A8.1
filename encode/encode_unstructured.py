@@ -240,11 +240,13 @@ def autotune_dk(source: Path, output: Path, grid: List[int],
               f"queries; CEILING measurement — biased upward in D)",
               flush=True)
 
+    from ._autotune import derive_k_constants
     results = []
     for dim in swept_zone:
         k = max(1, int(round(math.sqrt(dim))))
+        consts = derive_k_constants(k)
         cfg_ = build_structural_config(
-            dim=dim, k=k, max_slots=24,
+            dim=dim, k=k, max_slots=consts["max_slots"],
             enable_bigram=True, enable_kv=True,
             enable_hebbian=hebbian, hebbian_window=5,
         )
@@ -279,9 +281,12 @@ def autotune_dk(source: Path, output: Path, grid: List[int],
         latencies.sort()
         p50 = latencies[len(latencies)//2] if latencies else 0.0
         hit1 = 100.0 * hits / max(len(queries), 1)
-        results.append({"dim": dim, "k": k, "Hit@1": hit1, "p50_ms": p50})
-        print(f"[autotune]   D={dim:>5} k={k:>4}  Hit@1={hit1:>5.1f}%  "
-              f"p50={p50:>5.2f}ms  bench={bench_t:.2f}s", flush=True)
+        results.append({"dim": dim, "k": k, "Hit@1": hit1, "p50_ms": p50,
+                        "max_slots": consts["max_slots"],
+                        "salient_tokens": consts["salient_tokens"]})
+        print(f"[autotune]   D={dim:>5} k={k:>4}  slots={consts['max_slots']:>3}  "
+              f"Hit@1={hit1:>5.1f}%  p50={p50:>5.2f}ms  bench={bench_t:.2f}s",
+              flush=True)
         del pipe; gc.collect()
 
     # Pick winner: best Hit@1, tiebreak smallest D
@@ -299,6 +304,7 @@ def autotune_dk(source: Path, output: Path, grid: List[int],
             "predicted_zone": predicted_zone,
             "swept_zone": swept_zone,
             "results": results, "winner": winner,
+            "derived": derive_k_constants(int(winner["k"])),
             "policy": "unstructured_smallest_D_at_max_Hit@1",
             "queries_used": "synthetic_mask_first_60pct",
             "n_queries": len(queries),
@@ -308,12 +314,14 @@ def autotune_dk(source: Path, output: Path, grid: List[int],
         sample_path.unlink()
     except Exception:
         pass
+    winner_consts = derive_k_constants(int(winner["k"]))
     discovery = {
         "n_records": n_total, "p99_atoms": p99,
         "predicted_zone": predicted_zone,
         "predicted_rationale": rationale,
         "swept_zone": swept_zone,
         "results": results, "winner": winner,
+        "derived": winner_consts,
     }
     return int(winner["dim"]), int(winner["k"]), discovery
 
@@ -330,14 +338,17 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
     pipe_dir = output / "structural_v13"
     pipe_dir.mkdir(parents=True, exist_ok=True)
 
+    from ._autotune import derive_k_constants
+    consts = derive_k_constants(k)
     cfg_ = build_structural_config(
-        dim=dim, k=k, max_slots=24,
+        dim=dim, k=k, max_slots=consts["max_slots"],
         enable_bigram=True, enable_kv=True,
         enable_hebbian=hebbian, hebbian_window=5,
     )
     pipe = ehc.StructuralPipelineV13(cfg_)
-    print(f"[encode] D={dim}  k={k}  workers={workers}  hebbian={hebbian}",
-          flush=True)
+    print(f"[encode] D={dim}  k={k}  max_slots={consts['max_slots']}  "
+          f"salient_tokens={consts['salient_tokens']}  workers={workers}  "
+          f"hebbian={hebbian}", flush=True)
 
     cpath = output / "corpus.jsonl"
     t0 = time.perf_counter()
@@ -425,6 +436,7 @@ def main():
             swept_zone=discovery["swept_zone"],
             sweep_results=discovery["results"],
             winner=discovery["winner"],
+            derived=discovery.get("derived"),
         )
         print(f"[log]    appended discovery to {log_path}", flush=True)
 

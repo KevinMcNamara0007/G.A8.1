@@ -242,3 +242,22 @@ character. Implementation in `encode/_io.py::iter_json_records`.
 
 ---
 
+## WIKI
+- **Date**: 2026-04-24T13:40:14+00:00
+- **Encoder**: `encode_triples`
+- **Source**: `/Users/stark/Quantum_Computing_Lab/MOE/WIKI/source_corpus.jsonl`
+- **Records**: 977,051
+- **p99 atoms/record**: 2
+- **Predicted zone**: [4096, 8192]  (atomic SRO regime)
+- **Swept zone**: [4096, 8192]
+- **Sweep results**:
+  | D | k | Hit@1 | p50 ms |
+  |---:|---:|---:|---:|
+  | 4096 | 64 | 100.00% | 9.90 | ← winner
+  | 8192 | 91 | 100.00% | 14.09 |
+- **Winner**: D=4096, k=64, Hit@1=100.00%, p50=9.90 ms
+- **Derived constants** (at k=64): max_slots=16  (=round(2·√k))  •  salient_tokens=8  (=round(√k))
+- **vs prior** (2026-04-24T13:05:38+00:00): prior winner D=4096/k=64 Hit@1=100.00% p50=7.33ms  →  this run: ΔHit@1=+0.00pp  Δp50=+2.57ms  (same geometry)
+
+---
+

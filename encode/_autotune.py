@@ -44,10 +44,37 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 
 _GRID = (4096, 8192, 16384, 32768)
+
+
+def derive_k_constants(k: int) -> dict:
+    """Compute the k-coupled pipeline constants both encoders share.
+
+    These are the two knobs that the legacy config hardcoded (12 / 24 —
+    values that happen to approximate the formulas at k=128 only). Now
+    they scale with whatever k the autotune picks, so D=4096/k=64 gets
+    max_slots=16 instead of a k=128-era 24.
+
+    Returns a dict with:
+      - ``max_slots``: capacity for StructuralPipelineV13's positional
+        slot binding. Formula: ``round(2·√k)``. At k=64 → 16,
+        k=91 → 19, k=128 → 23, k=181 → 27.
+      - ``salient_tokens``: legacy top-k-IDF budget consumed by the
+        pre-v13 encoder in worker_encode.py. Formula: ``round(√k)``.
+        Not used by the structural pipeline itself, but we compute +
+        log it so corpus_profile.json and universal_constants.md stay
+        internally consistent across encoder paths.
+
+    Both have a floor of 1 (no divide-by-zero, no empty vector)."""
+    import math
+    sqrt_k = max(1.0, math.sqrt(max(int(k), 1)))
+    return {
+        "max_slots":      max(1, int(round(2.0 * sqrt_k))),
+        "salient_tokens": max(1, int(round(sqrt_k))),
+    }
 
 
 def predict_d_zone(p99_atoms: int,
@@ -257,6 +284,7 @@ def append_discovery(*,
                       swept_zone: List[int],
                       sweep_results: List[dict],
                       winner: dict,
+                      derived: Optional[dict] = None,
                       note: str = "") -> Path:
     """Append a discovery entry to universal_constants.md.
 
@@ -294,6 +322,13 @@ def append_discovery(*,
     section.append(
         f"- **Winner**: D={winner['dim']}, k={winner['k']}, "
         f"Hit@1={winner['Hit@1']:.2f}%, p50={winner['p50_ms']:.2f} ms\n")
+    if derived:
+        ms = derived.get("max_slots")
+        st = derived.get("salient_tokens")
+        section.append(
+            f"- **Derived constants** (at k={winner['k']}): "
+            f"max_slots={ms}  (=round(2·√k))  •  "
+            f"salient_tokens={st}  (=round(√k))\n")
 
     # Breadcrumb: delta vs prior winner if we have one
     if prior:

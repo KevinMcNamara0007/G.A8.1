@@ -125,6 +125,7 @@ def build_sro_tier1_config(
     dim: Optional[int] = None,
     k: Optional[int] = None,
     codebook_seed: Optional[int] = None,
+    max_slots: Optional[int] = None,
 ) -> "ehc.StructuralConfig":
     """Validated StructuralPipelineV13 config for Tier-1 SRO corpora.
 
@@ -154,9 +155,11 @@ def build_sro_tier1_config(
 
     Measured result at 5M: Hit@1 = 100%, p50 latency = 33 ms.
     """
+    # max_slots defaults to 24 for back-compat; callers that autotune
+    # pass a k-derived value via encode/_autotune.derive_k_constants().
     return build_config(
         dim=dim, k=k, codebook_seed=codebook_seed,
-        max_slots=24,
+        max_slots=24 if max_slots is None else int(max_slots),
         enable_bigram=True,
         enable_kv=True,
         enable_hebbian=False,

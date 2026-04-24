@@ -227,10 +227,13 @@ def autotune_dk(source: Path, output: Path, full_grid: List[int],
     warmup = unique_qs[200:220] if len(unique_qs) > 220 else bench[:20]
     del sr_count  # release the dict; query set is now self-contained
 
+    from ._autotune import derive_k_constants
     results = []
     for dim in swept_zone:
         k = max(1, int(round(math.sqrt(dim))))
-        cfg_ = build_sro_tier1_config(dim=dim, k=k)
+        consts = derive_k_constants(k)
+        cfg_ = build_sro_tier1_config(dim=dim, k=k,
+                                       max_slots=consts["max_slots"])
         pipe = ehc.StructuralPipelineV13(cfg_)
         # Ingest by re-streaming the temp sample file. Ingest batch is the
         # only Python state held alongside the C++ pipeline.
@@ -262,9 +265,12 @@ def autotune_dk(source: Path, output: Path, full_grid: List[int],
         latencies.sort()
         p50 = latencies[len(latencies)//2] if latencies else 0.0
         hit1 = 100.0 * hits / max(len(bench), 1)
-        results.append({"dim": dim, "k": k, "Hit@1": hit1, "p50_ms": p50})
-        print(f"[autotune]   D={dim:>5} k={k:>4}  Hit@1={hit1:>5.1f}%  "
-              f"p50={p50:>5.2f}ms  bench={bench_t:.2f}s", flush=True)
+        results.append({"dim": dim, "k": k, "Hit@1": hit1, "p50_ms": p50,
+                        "max_slots": consts["max_slots"],
+                        "salient_tokens": consts["salient_tokens"]})
+        print(f"[autotune]   D={dim:>5} k={k:>4}  slots={consts['max_slots']:>3}  "
+              f"Hit@1={hit1:>5.1f}%  p50={p50:>5.2f}ms  bench={bench_t:.2f}s",
+              flush=True)
         del pipe; gc.collect()
 
     # Pick winner: highest Hit@1, then smallest D, then lowest p50
@@ -284,6 +290,7 @@ def autotune_dk(source: Path, output: Path, full_grid: List[int],
             "swept_zone": swept_zone,
             "results": results,
             "winner": winner,
+            "derived": derive_k_constants(int(winner["k"])),
             "policy": "sro_tier1_smallest_D_at_max_Hit@1",
         }, f, indent=2)
 
@@ -293,12 +300,14 @@ def autotune_dk(source: Path, output: Path, full_grid: List[int],
     except Exception:
         pass
 
+    winner_consts = derive_k_constants(int(winner["k"]))
     discovery = {
         "n_records": n_total, "p99_atoms": p99,
         "predicted_zone": predicted_zone,
         "predicted_rationale": rationale,
         "swept_zone": swept_zone,
         "results": results, "winner": winner,
+        "derived": winner_consts,
     }
     return int(winner["dim"]), int(winner["k"]), discovery
 
@@ -316,8 +325,13 @@ def encode_full(source: Path, output: Path, dim: int, k: int, workers: int):
     pipe_dir = output / "structural_v13"
     pipe_dir.mkdir(parents=True, exist_ok=True)
 
-    pipe = ehc.StructuralPipelineV13(build_sro_tier1_config(dim=dim, k=k))
-    print(f"[encode] D={dim}  k={k}  workers={workers}", flush=True)
+    from ._autotune import derive_k_constants
+    consts = derive_k_constants(k)
+    pipe = ehc.StructuralPipelineV13(
+        build_sro_tier1_config(dim=dim, k=k, max_slots=consts["max_slots"]))
+    print(f"[encode] D={dim}  k={k}  max_slots={consts['max_slots']}  "
+          f"salient_tokens={consts['salient_tokens']}  workers={workers}",
+          flush=True)
 
     cpath = output / "corpus.jsonl"
     t0 = time.perf_counter()
@@ -411,6 +425,7 @@ def main():
             swept_zone=discovery["swept_zone"],
             sweep_results=discovery["results"],
             winner=discovery["winner"],
+            derived=discovery.get("derived"),
         )
         print(f"[log]    appended discovery to {log_path}", flush=True)
 
