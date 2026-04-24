@@ -66,7 +66,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
@@ -147,6 +147,19 @@ def _count_records(source: Path) -> int:
     for _ in _stream_records(source):
         n += 1
     return n
+
+
+def _quick_p99_atoms_unstructured(source: Path) -> int:
+    """Single-pass p99 of text-atom count per record. Used on the
+    --no-autotune path so max_slots derivation still has a p99 signal."""
+    counts = []
+    for _text, rec in _stream_records(source):
+        counts.append(len((rec.get("text", "") or "").split()))
+    if not counts:
+        return 0
+    counts.sort()
+    idx = max(0, int(round(0.99 * (len(counts) - 1))))
+    return counts[idx]
 
 
 def autotune_dk(source: Path, output: Path, grid: List[int],
@@ -244,7 +257,7 @@ def autotune_dk(source: Path, output: Path, grid: List[int],
     results = []
     for dim in swept_zone:
         k = max(1, int(round(math.sqrt(dim))))
-        consts = derive_k_constants(k)
+        consts = derive_k_constants(k, p99_atoms=p99)
         cfg_ = build_structural_config(
             dim=dim, k=k, max_slots=consts["max_slots"],
             enable_bigram=True, enable_kv=True,
@@ -314,7 +327,7 @@ def autotune_dk(source: Path, output: Path, grid: List[int],
         sample_path.unlink()
     except Exception:
         pass
-    winner_consts = derive_k_constants(int(winner["k"]))
+    winner_consts = derive_k_constants(int(winner["k"]), p99_atoms=p99)
     discovery = {
         "n_records": n_total, "p99_atoms": p99,
         "predicted_zone": predicted_zone,
@@ -323,11 +336,11 @@ def autotune_dk(source: Path, output: Path, grid: List[int],
         "results": results, "winner": winner,
         "derived": winner_consts,
     }
-    return int(winner["dim"]), int(winner["k"]), discovery
+    return int(winner["dim"]), int(winner["k"]), p99, discovery
 
 
 def encode_full(source: Path, output: Path, dim: int, k: int,
-                workers: int, hebbian: bool):
+                p99_atoms: Optional[int], workers: int, hebbian: bool):
     """Stream input → encode + write sidecar concurrently.
 
     Memory discipline: corpus.jsonl is opened for write at start; each
@@ -339,16 +352,18 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
     pipe_dir.mkdir(parents=True, exist_ok=True)
 
     from ._autotune import derive_k_constants
-    consts = derive_k_constants(k)
+    consts = derive_k_constants(k, p99_atoms=p99_atoms)
     cfg_ = build_structural_config(
         dim=dim, k=k, max_slots=consts["max_slots"],
         enable_bigram=True, enable_kv=True,
         enable_hebbian=hebbian, hebbian_window=5,
     )
     pipe = ehc.StructuralPipelineV13(cfg_)
-    print(f"[encode] D={dim}  k={k}  max_slots={consts['max_slots']}  "
-          f"salient_tokens={consts['salient_tokens']}  workers={workers}  "
-          f"hebbian={hebbian}", flush=True)
+    p99_tag = f"p99={p99_atoms}" if p99_atoms is not None else "p99=(unscanned)"
+    print(f"[encode] D={dim}  k={k}  {p99_tag}  "
+          f"max_slots={consts['max_slots']}  "
+          f"salient_tokens={consts['salient_tokens']}  "
+          f"workers={workers}  hebbian={hebbian}", flush=True)
 
     cpath = output / "corpus.jsonl"
     t0 = time.perf_counter()
@@ -409,6 +424,7 @@ def main():
     print(f"[input] source={source}  workers={workers}", flush=True)
 
     discovery = None
+    p99 = None
     if args.dim is not None and args.k is not None:
         dim, k = int(args.dim), int(args.k)
         print(f"[geometry] explicit pin: D={dim}  k={k}", flush=True)
@@ -418,11 +434,17 @@ def main():
         print(f"[geometry] cfg defaults: D={dim}  k={k}", flush=True)
     else:
         grid = [int(x) for x in args.autotune_grid.split(",")]
-        dim, k, discovery = autotune_dk(source, output, grid, workers,
-                                          hebbian,
-                                          operator_queries_path=args.operator_queries)
+        dim, k, p99, discovery = autotune_dk(
+            source, output, grid, workers, hebbian,
+            operator_queries_path=args.operator_queries)
 
-    n = encode_full(source, output, dim, k, workers, hebbian)
+    if p99 is None:
+        print("[scan] quick p99 atoms scan (for max_slots derivation)…",
+              flush=True)
+        p99 = _quick_p99_atoms_unstructured(source)
+        print(f"[scan] p99 atoms/record = {p99}", flush=True)
+
+    n = encode_full(source, output, dim, k, p99, workers, hebbian)
 
     if discovery is not None:
         log_path = append_discovery(

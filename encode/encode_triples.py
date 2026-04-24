@@ -146,6 +146,22 @@ def _count_records(source: Path) -> int:
     return count_records(source)
 
 
+def _quick_p99_atoms_sro(source: Path) -> int:
+    """Single-pass p99 of atom count (s+r tokens) per record. Used on
+    the --no-autotune path so max_slots derivation still has a p99
+    signal. Streams; constant memory."""
+    from ._autotune import atoms_for_sro_tier1
+    from ._io import iter_json_records
+    counts = []
+    for rec in iter_json_records(source):
+        counts.append(atoms_for_sro_tier1(rec))
+    if not counts:
+        return 0
+    counts.sort()
+    idx = max(0, int(round(0.99 * (len(counts) - 1))))
+    return counts[idx]
+
+
 def autotune_dk(source: Path, output: Path, full_grid: List[int],
                 workers: int) -> Tuple[int, int, dict]:
     """Atom-aware autotune. Returns (dim, k, discovery_dict).
@@ -231,7 +247,7 @@ def autotune_dk(source: Path, output: Path, full_grid: List[int],
     results = []
     for dim in swept_zone:
         k = max(1, int(round(math.sqrt(dim))))
-        consts = derive_k_constants(k)
+        consts = derive_k_constants(k, p99_atoms=p99)
         cfg_ = build_sro_tier1_config(dim=dim, k=k,
                                        max_slots=consts["max_slots"])
         pipe = ehc.StructuralPipelineV13(cfg_)
@@ -300,7 +316,7 @@ def autotune_dk(source: Path, output: Path, full_grid: List[int],
     except Exception:
         pass
 
-    winner_consts = derive_k_constants(int(winner["k"]))
+    winner_consts = derive_k_constants(int(winner["k"]), p99_atoms=p99)
     discovery = {
         "n_records": n_total, "p99_atoms": p99,
         "predicted_zone": predicted_zone,
@@ -309,10 +325,11 @@ def autotune_dk(source: Path, output: Path, full_grid: List[int],
         "results": results, "winner": winner,
         "derived": winner_consts,
     }
-    return int(winner["dim"]), int(winner["k"]), discovery
+    return int(winner["dim"]), int(winner["k"]), p99, discovery
 
 
-def encode_full(source: Path, output: Path, dim: int, k: int, workers: int):
+def encode_full(source: Path, output: Path, dim: int, k: int,
+                p99_atoms: Optional[int], workers: int):
     """Stream the full corpus → encode + write sidecar concurrently.
 
     Memory discipline: NEVER materializes the full sidecar in Python.
@@ -326,10 +343,12 @@ def encode_full(source: Path, output: Path, dim: int, k: int, workers: int):
     pipe_dir.mkdir(parents=True, exist_ok=True)
 
     from ._autotune import derive_k_constants
-    consts = derive_k_constants(k)
+    consts = derive_k_constants(k, p99_atoms=p99_atoms)
     pipe = ehc.StructuralPipelineV13(
         build_sro_tier1_config(dim=dim, k=k, max_slots=consts["max_slots"]))
-    print(f"[encode] D={dim}  k={k}  max_slots={consts['max_slots']}  "
+    p99_tag = f"p99={p99_atoms}" if p99_atoms is not None else "p99=(unscanned)"
+    print(f"[encode] D={dim}  k={k}  {p99_tag}  "
+          f"max_slots={consts['max_slots']}  "
           f"salient_tokens={consts['salient_tokens']}  workers={workers}",
           flush=True)
 
@@ -396,8 +415,9 @@ def main():
     print(f"[input] source={source}  records={n_records:,}  workers={workers}",
           flush=True)
 
-    # Decide (D, k)
+    # Decide (D, k, p99)
     discovery = None
+    p99 = None
     if args.dim is not None and args.k is not None:
         dim, k = int(args.dim), int(args.k)
         print(f"[geometry] explicit pin: D={dim}  k={k}", flush=True)
@@ -407,9 +427,18 @@ def main():
         print(f"[geometry] cfg defaults: D={dim}  k={k}", flush=True)
     else:
         grid = [int(x) for x in args.autotune_grid.split(",")]
-        dim, k, discovery = autotune_dk(source, output, grid, workers)
+        dim, k, p99, discovery = autotune_dk(source, output, grid, workers)
 
-    n = encode_full(source, output, dim, k, workers)
+    # If we skipped autotune, do a cheap p99 scan so max_slots can still
+    # be p99-aware. Small cost (~1-3 s per 1M records) vs the clear win
+    # of not silently truncating long records.
+    if p99 is None:
+        print("[scan] quick p99 atoms scan (for max_slots derivation)…",
+              flush=True)
+        p99 = _quick_p99_atoms_sro(source)
+        print(f"[scan] p99 atoms/record = {p99}", flush=True)
+
+    n = encode_full(source, output, dim, k, p99, workers)
 
     # Append the discovery to the universal constants log so future
     # encodes can reason from precedent.

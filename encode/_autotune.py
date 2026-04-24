@@ -50,29 +50,42 @@ from typing import List, Optional, Tuple
 _GRID = (4096, 8192, 16384, 32768)
 
 
-def derive_k_constants(k: int) -> dict:
-    """Compute the k-coupled pipeline constants both encoders share.
+def derive_k_constants(k: int,
+                        p99_atoms: Optional[int] = None,
+                        ceiling: int = 256) -> dict:
+    """Compute the pipeline constants both encoders share.
 
-    These are the two knobs that the legacy config hardcoded (12 / 24 —
-    values that happen to approximate the formulas at k=128 only). Now
-    they scale with whatever k the autotune picks, so D=4096/k=64 gets
-    max_slots=16 instead of a k=128-era 24.
+    Two formulas feed ``max_slots``:
 
-    Returns a dict with:
-      - ``max_slots``: capacity for StructuralPipelineV13's positional
-        slot binding. Formula: ``round(2·√k)``. At k=64 → 16,
-        k=91 → 19, k=128 → 23, k=181 → 27.
-      - ``salient_tokens``: legacy top-k-IDF budget consumed by the
-        pre-v13 encoder in worker_encode.py. Formula: ``round(√k)``.
-        Not used by the structural pipeline itself, but we compute +
-        log it so corpus_profile.json and universal_constants.md stay
-        internally consistent across encoder paths.
+      - ``base = round(2·√k)`` — k-coupled floor. At k=64 → 16,
+        k=128 → 23, k=181 → 27. Keeps role-table size sane on short
+        corpora (SRO, tagged keywords).
+      - ``lift = p99_atoms`` — when the corpus has long records, the
+        slot cap lifts to the 99th-percentile token count so slot
+        binding actually covers the typical long record. At EDGE
+        (p99=65, k=64), max_slots jumps 16 → 65; previously the last
+        75% of each record's tokens never reached slot/bigram binding.
 
-    Both have a floor of 1 (no divide-by-zero, no empty vector)."""
+    Final: ``max_slots = min(max(base, lift), ceiling)``. Ceiling (256
+    by default) bounds encode-time on outlier corpora with pathological
+    record lengths — O(max_slots) work in two of the three binding
+    loops, so we cap it here rather than let a rogue 10k-token record
+    blow up ingest.
+
+    ``salient_tokens = round(√k)`` — legacy IDF budget used only by
+    ``worker_encode.py``. Computed + logged here so corpus_profile.json
+    is internally consistent across encoder paths.
+
+    All outputs have a floor of 1. Pass ``p99_atoms=None`` to get
+    the k-only formula (used on the ``--no-autotune`` path where p99
+    may not be measured)."""
     import math
     sqrt_k = max(1.0, math.sqrt(max(int(k), 1)))
+    base = int(round(2.0 * sqrt_k))
+    if p99_atoms is not None:
+        base = max(base, int(p99_atoms))
     return {
-        "max_slots":      max(1, int(round(2.0 * sqrt_k))),
+        "max_slots":      min(max(1, base), int(ceiling)),
         "salient_tokens": max(1, int(round(sqrt_k))),
     }
 
@@ -325,10 +338,13 @@ def append_discovery(*,
     if derived:
         ms = derived.get("max_slots")
         st = derived.get("salient_tokens")
+        import math
+        base = max(1, int(round(2.0 * math.sqrt(max(int(winner["k"]), 1)))))
+        reason = "=2·√k" if ms == base else f"=max(2·√k, p99) (p99={p99_atoms})"
         section.append(
-            f"- **Derived constants** (at k={winner['k']}): "
-            f"max_slots={ms}  (=round(2·√k))  •  "
-            f"salient_tokens={st}  (=round(√k))\n")
+            f"- **Derived constants** (k={winner['k']}, p99={p99_atoms}): "
+            f"max_slots={ms}  ({reason})  •  "
+            f"salient_tokens={st}  (=√k)\n")
 
     # Breadcrumb: delta vs prior winner if we have one
     if prior:

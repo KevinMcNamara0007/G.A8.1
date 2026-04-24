@@ -261,3 +261,43 @@ character. Implementation in `encode/_io.py::iter_json_records`.
 
 ---
 
+## WIKI
+- **Date**: 2026-04-24T13:55:20+00:00
+- **Encoder**: `encode_triples`
+- **Source**: `/Users/stark/Quantum_Computing_Lab/MOE/WIKI/source_corpus.jsonl`
+- **Records**: 977,051
+- **p99 atoms/record**: 2
+- **Predicted zone**: [4096, 8192]  (atomic SRO regime)
+- **Swept zone**: [4096, 8192]
+- **Sweep results**:
+  | D | k | Hit@1 | p50 ms |
+  |---:|---:|---:|---:|
+  | 4096 | 64 | 100.00% | 7.38 | ← winner
+  | 8192 | 91 | 100.00% | 10.43 |
+- **Winner**: D=4096, k=64, Hit@1=100.00%, p50=7.38 ms
+- **Derived constants** (k=64, p99=2): max_slots=16  (=2·√k)  •  salient_tokens=8  (=√k)
+- **vs prior** (2026-04-24T13:40:14+00:00): prior winner D=4096/k=64 Hit@1=100.00% p50=9.90ms  →  this run: ΔHit@1=+0.00pp  Δp50=-2.52ms  (same geometry)
+
+---
+
+## EDGE
+- **Date**: 2026-04-24T13:56:33+00:00
+- **Encoder**: `encode_unstructured`
+- **Source**: `/Users/stark/Quantum_Computing_Lab/MOE/EDGE/source_corpus.jsonl`
+- **Records**: 220,025
+- **p99 atoms/record**: 65
+- **Predicted zone**: [4096, 8192, 16384, 32768]  (long narrative regime (full sweep — formula over-predicts))
+- **Swept zone**: [4096, 8192, 16384, 32768]
+- **Sweep results**:
+  | D | k | Hit@1 | p50 ms |
+  |---:|---:|---:|---:|
+  | 4096 | 64 | 52.00% | 0.99 | ← winner
+  | 8192 | 91 | 32.00% | 1.27 |
+  | 16384 | 128 | 28.00% | 1.64 |
+  | 32768 | 181 | 44.00% | 3.09 |
+- **Winner**: D=4096, k=64, Hit@1=52.00%, p50=0.99 ms
+- **Derived constants** (k=64, p99=65): max_slots=65  (=max(2·√k, p99) (p99=65))  •  salient_tokens=8  (=√k)
+- **vs prior** (2026-04-24T04:43:48+00:00): prior winner D=4096/k=64 Hit@1=52.00% p50=0.74ms  →  this run: ΔHit@1=+0.00pp  Δp50=+0.25ms  (same geometry)
+
+---
+
