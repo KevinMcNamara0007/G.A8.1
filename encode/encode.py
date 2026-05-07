@@ -583,8 +583,16 @@ def run_encode(
         source, n_entity_buckets, cluster_data, str(chunks_dir), dim, k,
         media_dir=media_dir)
 
-    # Step 2: Encode in waves
-    concurrency = max(1, math.ceil(len(chunk_info) / waves))
+    # Step 2: Encode in waves. Cap concurrency at CPU budget — see
+    # BUG-G81-01: --waves is the divisor not the worker count, so the
+    # default _rw(0)=cores produces ceil(shards/cores) workers in
+    # parallel (the inversion of intent on small boxes).
+    from config import resolve_workers as _rw_cap
+    cpu_cap = max(1, _rw_cap(0))
+    nominal = max(1, math.ceil(len(chunk_info) / waves))
+    concurrency = max(1, min(nominal, cpu_cap))
+    if concurrency != nominal:
+        waves = max(1, math.ceil(len(chunk_info) / concurrency))
     print(f"\n[Step 2] Encoding {len(chunk_info)} shards in {waves} waves "
           f"({concurrency} concurrent)...")
 

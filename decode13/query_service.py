@@ -166,6 +166,12 @@ class ShardData13:
 
     @staticmethod
     def _load_lsh(npz_path: Path, dim: int, k: int):
+        # BUG-DATA-02 patch: pass numpy arrays directly to LSHIndexData
+        # rather than .tolist()-then-assign. The original Python-list
+        # round-trip allocated ~28 B per element (PyLong objects), turning
+        # 524k int64 offset entries per shard into ~15 MB of boxed ints,
+        # which OOM'd a 16 GB box at 600+ shards. nanobind iterates numpy
+        # arrays as numpy scalars, no boxed PyLongs.
         d = np.load(str(npz_path), allow_pickle=True)
         lsh_data = ehc.LSHIndexData()
         lsh_data.dim = int(d["dim"][0])
@@ -173,13 +179,19 @@ class ShardData13:
         lsh_data.num_tables = int(d["num_tables"][0])
         lsh_data.hash_size = int(d["hash_size"][0])
         lsh_data.n_vectors = int(d["n_vectors"][0])
-        lsh_data.ids = d["ids"].tolist()
-        lsh_data.vec_indices = d["vec_indices"].astype(np.int32).tolist()
-        lsh_data.vec_signs = d["vec_signs"].astype(np.int8).tolist()
-        lsh_data.vec_offsets = d["vec_offsets"].tolist()
+        lsh_data.ids = np.ascontiguousarray(d["ids"], dtype=np.int64)
+        lsh_data.vec_indices = np.ascontiguousarray(d["vec_indices"], dtype=np.int32)
+        lsh_data.vec_signs = np.ascontiguousarray(d["vec_signs"], dtype=np.int8)
+        lsh_data.vec_offsets = np.ascontiguousarray(d["vec_offsets"], dtype=np.int64)
         nt = lsh_data.num_tables
-        lsh_data.bucket_ids = [d[f"bucket_ids_{t}"].tolist() for t in range(nt)]
-        lsh_data.bucket_offsets = [d[f"bucket_offsets_{t}"].tolist() for t in range(nt)]
+        lsh_data.bucket_ids = [
+            np.ascontiguousarray(d[f"bucket_ids_{t}"], dtype=np.int32)
+            for t in range(nt)
+        ]
+        lsh_data.bucket_offsets = [
+            np.ascontiguousarray(d[f"bucket_offsets_{t}"], dtype=np.int64)
+            for t in range(nt)
+        ]
         lsh = ehc.BSCLSHIndex(dim, k)
         lsh.deserialize(lsh_data)
         return lsh
