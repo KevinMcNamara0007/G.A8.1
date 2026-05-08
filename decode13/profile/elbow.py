@@ -43,8 +43,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 # ── Grid ─────────────────────────────────────────────────────
-GRID_POWER_OF_TWO = (1024, 2048, 4096, 8192, 16384, 32768)
-GRID_EXTENDED = (1024, 2048, 4096, 6144, 8192, 12288, 16384, 32768)
+GRID_POWER_OF_TWO = (256, 512, 1024, 2048, 4096, 8192, 16384)
+GRID_EXTENDED = (256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384)
 
 # ── Zone knobs ───────────────────────────────────────────────
 # Default headroom for Zone 2 plateau selection. Promotes from the

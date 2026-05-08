@@ -85,7 +85,13 @@ def _stream_json_array(f, chunk: int = 1 << 20) -> Iterator[dict]:
             return
         while buf:
             buf = buf.lstrip(", \n\t\r")
-            if not buf or buf.startswith("]"):
+            if not buf:
+                # Chunk boundary landed exactly on a record terminator.
+                # Need more data — break to outer loop to refill, do NOT
+                # return (that was the early-exit bug at any record whose
+                # trailing `}` happened to align with the chunk edge).
+                break
+            if buf.startswith("]"):
                 return
             try:
                 obj, idx = dec.raw_decode(buf)

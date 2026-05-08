@@ -214,9 +214,20 @@ def _partition_worker(args):
 
     n_clusters = max(1, len(centroids))
 
-    # Load this worker's slice
-    with open(slice_path, "rb") as f:
-        triples = pickle.load(f)
+    # Stream this worker's slice. Slice files are written by the
+    # orchestrator as a sequence of pickled dicts (one frame per
+    # record), so we iterate via pickle.load-until-EOFError instead
+    # of materializing a full list — keeps worker peak RSS bounded
+    # by per-shard buffer size, not slice size.
+    def _iter_pickle_stream(path):
+        with open(path, "rb") as fh:
+            while True:
+                try:
+                    yield pickle.load(fh)
+                except EOFError:
+                    return
+
+    triples = _iter_pickle_stream(slice_path)
 
     # Assign each triple to a shard
     shard_buffers = {}
@@ -295,28 +306,33 @@ def _partition_worker(args):
     return counts
 
 
-def _load_source_data(source: str, media_dir: str = None):
-    """Load source data as list of triple dicts. Handles JSON and JSONL.
+def _iter_source_data(source: str, media_dir: str = None):
+    """Stream triple dicts one at a time. Yields (triple, has_media) tuples.
+
+    Replaces the old list-building _load_source_data. For json_triples we
+    use the SAX-style stream_triples reader (decode13/benchmark/triples_reader);
+    json.load on the 1.9 GB Wikidata corpus burned ~15 GB of Python objects.
+    For JSONL we read line-by-line. Memory footprint is O(1) in the corpus
+    size — peak is one record at a time.
 
     For JSONL messages, maps:
       subject  = author username
       relation = tags/site context
       object   = message_text_translated
       media_path / media_type = resolved media file
-
-    Returns: (data_list, n_media)
     """
     source_type = _detect_source_type(source)
-    n_media = 0
 
     if source_type == "json_triples":
-        print(f"  Source type: JSON triples")
-        with open(source) as f:
-            data = json.load(f)
-        return data, 0
+        print(f"  Source type: JSON triples (streaming)")
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from decode13.benchmark.triples_reader import stream_triples
+        for trip in stream_triples(source):
+            yield trip, False
+        return
 
     # ── JSONL messages ─────────────────────────────────────
-    print(f"  Source type: JSONL messages")
+    print(f"  Source type: JSONL messages (streaming)")
 
     # Auto-detect media dir
     if media_dir is None:
@@ -329,8 +345,9 @@ def _load_source_data(source: str, media_dir: str = None):
     if media_dir:
         print(f"  Media dir: {media_dir}")
 
-    data = []
     ts_default = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    n = 0
+    n_media = 0
 
     with open(source, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -367,9 +384,11 @@ def _load_source_data(source: str, media_dir: str = None):
 
             # Resolve media
             media_path, media_type = _resolve_media(msg, media_dir)
+            has_media = False
             if media_path:
                 triple["media_path"] = media_path
                 triple["media_type"] = media_type
+                has_media = True
                 n_media += 1
 
             # ── SIDECAR: preserve original record fields (never transform) ─
@@ -395,13 +414,11 @@ def _load_source_data(source: str, media_dir: str = None):
             elif site:
                 triple["_sidecar"]["channel"] = site
 
-            data.append(triple)
+            yield triple, has_media
+            n += 1
 
-            if len(data) % 100000 == 0:
-                print(f"    {len(data):,} messages loaded ({n_media:,} with media)...")
-
-    print(f"  {len(data):,} messages, {n_media:,} with media")
-    return data, n_media
+            if n % 100000 == 0:
+                print(f"    {n:,} messages streamed ({n_media:,} with media)...")
 
 
 def stream_and_partition(
@@ -432,53 +449,60 @@ def stream_and_partition(
           f"{n_entity_buckets}×{n_clusters} = {n_shards} shards")
     t0 = time.perf_counter()
 
-    # Step 1: Load source data (JSON triples or JSONL messages)
-    print(f"  Loading source...")
-    data, n_media = _load_source_data(source, media_dir)
-    total = len(data)
-
-    # Step 1b: Build GLOBAL IDF across full corpus (one pass)
-    print(f"  Building global IDF ({total:,} docs)...")
-    from worker_encode import _tokenize
+    # Step 1: Stream source → IDF doc-freq + per-worker slice files in
+    # one pass. Eliminates the prior ~5x peak (json.load + full list).
+    # Slice files now hold a stream of pickled dicts (concatenated
+    # pickle frames) rather than one pickled list — workers iterate
+    # them via pickle.load-until-EOFError. See _partition_worker.
+    print(f"  Streaming source + IDF + slicing in one pass...")
+    try:
+        from worker_encode import _tokenize  # noqa: F401  (script-style)
+    except ImportError:
+        from encode.worker_encode import _tokenize  # noqa: F401  (-m package)
     from collections import Counter
-    _doc_freq = Counter()
-    for _d in data:
-        _all = set(_tokenize(_d.get("subject", "")) +
-                    _tokenize(_d.get("relation", "")) +
-                    _tokenize(_d.get("object", "")))
-        for _t in _all:
-            _doc_freq[_t] += 1
-    import math as _math
-    global_idf = {tok: _math.log(max(total, 1) / max(df, 1))
-                  for tok, df in _doc_freq.items()}
-    del _doc_freq
+    doc_freq = Counter()
 
-    # Save global IDF for workers
-    idf_path = chunks_dir / "_global_idf.json"
     chunks_dir.mkdir(parents=True, exist_ok=True)
-    with open(idf_path, "w") as f:
-        json.dump(global_idf, f)
-    print(f"  Global IDF: {len(global_idf):,} tokens")
-    del global_idf
-    gc.collect()
-
-    print(f"  {total:,} records → splitting into {n_partition_workers} slices...")
-
-    slice_size = math.ceil(total / n_partition_workers)
+    slice_files = []
     slice_paths = []
     for wi in range(n_partition_workers):
-        start = wi * slice_size
-        end = min(start + slice_size, total)
-        if start >= total:
-            break
-        slice_path = chunks_dir / f"_slice_{wi}.pkl"
-        with open(slice_path, "wb") as f:
-            pickle.dump(data[start:end], f, protocol=pickle.HIGHEST_PROTOCOL)
-        slice_paths.append((wi, str(slice_path)))
+        sp = chunks_dir / f"_slice_{wi}.pkl"
+        slice_files.append(open(sp, "wb"))
+        slice_paths.append((wi, str(sp)))
 
-    del data
+    total = 0
+    n_media = 0
+    try:
+        for trip, has_media in _iter_source_data(source, media_dir):
+            toks = set(_tokenize(trip.get("subject", "")) +
+                       _tokenize(trip.get("relation", "")) +
+                       _tokenize(trip.get("object", "")))
+            for t in toks:
+                doc_freq[t] += 1
+            # Round-robin assign one record at a time so slice sizes
+            # stay balanced even if the source skews toward the front.
+            wi = total % n_partition_workers
+            pickle.dump(trip, slice_files[wi], protocol=pickle.HIGHEST_PROTOCOL)
+            total += 1
+            if has_media:
+                n_media += 1
+    finally:
+        for sf in slice_files:
+            sf.close()
+
+    import math as _math
+    global_idf = {tok: _math.log(max(total, 1) / max(df, 1))
+                  for tok, df in doc_freq.items()}
+    del doc_freq
     gc.collect()
-    print(f"  {len(slice_paths)} slices written")
+
+    idf_path = chunks_dir / "_global_idf.json"
+    with open(idf_path, "w") as f:
+        json.dump(global_idf, f)
+    print(f"  Global IDF: {len(global_idf):,} tokens, {total:,} records")
+    del global_idf
+    gc.collect()
+    print(f"  {len(slice_paths)} slices written ({total:,} records, {n_media:,} with media)")
 
     # Step 2: Parallel partition assignment
     print(f"  Assigning shards ({n_partition_workers} workers)...")
@@ -583,12 +607,23 @@ def run_encode(
         source, n_entity_buckets, cluster_data, str(chunks_dir), dim, k,
         media_dir=media_dir)
 
-    # Step 2: Encode in waves
-    concurrency = max(1, math.ceil(len(chunk_info) / waves))
+    # Step 2: Encode in waves. Cap concurrency at CPU budget — see
+    # BUG-G81-01: --waves is the divisor not the worker count, so the
+    # default _rw(0)=cores produces ceil(shards/cores) workers in
+    # parallel (the inversion of intent on small boxes).
+    from config import resolve_workers as _rw_cap
+    cpu_cap = max(1, _rw_cap(0))
+    nominal = max(1, math.ceil(len(chunk_info) / waves))
+    concurrency = max(1, min(nominal, cpu_cap))
+    if concurrency != nominal:
+        waves = max(1, math.ceil(len(chunk_info) / concurrency))
     print(f"\n[Step 2] Encoding {len(chunk_info)} shards in {waves} waves "
           f"({concurrency} concurrent)...")
 
-    from worker_encode import worker_encode
+    try:
+        from worker_encode import worker_encode
+    except ImportError:
+        from encode.worker_encode import worker_encode
     manifests = []
 
     for wave in range(waves):

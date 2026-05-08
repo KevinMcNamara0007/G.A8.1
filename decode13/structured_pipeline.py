@@ -97,11 +97,25 @@ class StructuredAtomicPipeline:
         )
 
     def tokens_from_triple(self, tri: ExtractedTriple) -> List[str]:
-        """Return the list of atomic tokens to bind for this triple.
+        """Return the atomic tokens to bind for this triple.
 
-        One token per role — compound tokens are single atoms.
+        Path-B-symmetric SRO Tier-1 contract: only the (s, r) atoms
+        enter the vector. The object atom O is preserved in the
+        sidecar (`value` column) as its own canonical form O' — a
+        "small semantic summary" available at query time for
+        filtering, re-ranking, or display, but never for the
+        primary-retrieval LSH bucketing.
+
+        Why drop tri.obj from the vector: encoding it adds positions
+        that V_query (which has only s, r at lookup time) doesn't
+        share, which causes LSH hash signatures to diverge between
+        encode and query, and the gold record stops landing in the
+        candidate set. Dropping it makes V_record bit-identical to
+        V_query for the same (s, r) — Path B symmetry — restoring
+        ~100% unique-key Hit@1 while keeping the full O reachable
+        through the sidecar.
         """
-        return [t for t in [tri.subject, tri.relation, tri.obj] if t]
+        return [t for t in [tri.subject, tri.relation] if t]
 
     def emit_query(
         self,

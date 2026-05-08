@@ -38,38 +38,57 @@ STOP_WORDS = frozenset({
 
 
 def extract_actions(source: str, sample_size: int, seed: int = 42) -> list:
-    """Extract ACTION phrases from corpus.
+    """Extract ACTION phrases from corpus via streaming reservoir sampling.
 
     For structured triples: ACTION = relation field (no SRL needed).
     For unstructured text: falls back to SRL.
+
+    Memory: O(sample_size) regardless of corpus size — uses streaming
+    reservoir sampling instead of materializing the whole source. The
+    prior `json.load(open(source))` OOM'd the lab box on the 1.9 GB
+    21M-record Wikidata file.
     """
     rng = random.Random(seed)
 
-    with open(source) as f:
-        data = json.load(f)
+    # Use the existing streaming reader from encode._io (auto-detects
+    # JSON-array vs JSONL).
+    from encode._io import iter_json_records
 
-    # Detect structured triples
-    if isinstance(data, list) and data and "relation" in data[0]:
-        # Structured: relation field IS the action — no SRL overhead
-        sample = rng.sample(data, min(sample_size, len(data)))
+    # Reservoir-sample sample_size records uniformly from the stream.
+    reservoir: list = []
+    first_record = None
+    for i, rec in enumerate(iter_json_records(source)):
+        if first_record is None:
+            first_record = rec
+        if i < sample_size:
+            reservoir.append(rec)
+        else:
+            j = rng.randint(0, i)
+            if j < sample_size:
+                reservoir[j] = rec
+
+    if not reservoir:
+        return []
+
+    # Detect structured triples by inspecting the first record.
+    if isinstance(first_record, dict) and "relation" in first_record:
         actions = []
-        for t in sample:
+        for t in reservoir:
             r = t.get("relation", "").strip()
             if r and len(r) > 1:
                 words = [w for w in r.replace("_", " ").lower().split()
                          if w not in STOP_WORDS and len(w) > 1]
                 if words:
                     actions.append(" ".join(words))
-        del data, sample
+        del reservoir
         gc.collect()
         return actions
 
     # Unstructured: use SRL
     from eh import LightweightSRL
     srl = LightweightSRL(use_spacy=False)
-    sample = rng.sample(data, min(sample_size, len(data)))
     actions = []
-    for item in sample:
+    for item in reservoir:
         text = str(item) if not isinstance(item, str) else item
         roles = srl.extract_roles(text)
         action = roles.get("ACTION", "").strip()
@@ -78,7 +97,7 @@ def extract_actions(source: str, sample_size: int, seed: int = 42) -> list:
                      if w not in STOP_WORDS and len(w) > 1]
             if words:
                 actions.append(" ".join(words))
-    del data, sample
+    del reservoir
     gc.collect()
     return actions
 

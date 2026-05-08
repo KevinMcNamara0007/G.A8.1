@@ -55,6 +55,14 @@ try:
 except ImportError:
     MAX_SALIENT_TOKENS = 12
 
+# MAX_SALIENT_TOKENS is now a *fallback* used only when the caller
+# doesn't know k. The canonical recipe is salient = k // 2 — derived
+# per encode via encode._autotune.derive_k_constants(k). See
+# worker_encode() below: it computes a per-call max_salient_tokens
+# from the runtime k and uses that everywhere instead of this module
+# global. The global remains for legacy callers (encode_edge etc.)
+# that don't yet thread k through.
+
 
 def _hash_entity(entity: str, n_buckets: int) -> int:
     h = hashlib.blake2b(entity.encode(), digest_size=8).digest()
@@ -299,6 +307,17 @@ def worker_encode(args):
     t0 = time.perf_counter()
     out = Path(output_dir) / f"shard_{worker_id:04d}"
     out.mkdir(parents=True, exist_ok=True)
+
+    # Per-call salient-tokens budget derived from k via the canonical
+    # recipe (k/2). This shadows the MAX_SALIENT_TOKENS module global
+    # within this worker invocation so encode.py stays in lockstep
+    # with encode_triples.py / encode_unstructured.py / decode13.
+    try:
+        from encode._autotune import derive_k_constants
+    except ImportError:
+        from _autotune import derive_k_constants
+    _consts = derive_k_constants(int(k))
+    max_salient_tokens = int(_consts["salient_tokens"])
 
     # ── Closed-loop canonicalization (plan §2.1) ─────────────
     # When enabled, both encode and decode route tokens through the same
@@ -566,10 +585,20 @@ def worker_encode(args):
                 # one vector here; the end-to-end TierEncoder (decode13/)
                 # emits one vector per triple. This shard path emits one
                 # vector per chunk to preserve sidecar alignment.
+                # Tokens come from the pipeline's tokens_from_triple()
+                # contract, NOT from raw (s, r, o) — so when Tier-1's
+                # contract drops `tri.obj` (Path-B-symmetric: O lives in
+                # the sidecar as O', not in the vector), this loop
+                # honors that automatically.
                 all_tokens = []
                 _chunk_gate = True
+                _tier_pipe = tier_pipelines.get(_chunk_tier)
+                _tft = (getattr(_tier_pipe, "tokens_from_triple", None)
+                        if _tier_pipe is not None else None)
                 for tri in dec.triples:
-                    for tok in (tri.subject, tri.relation, tri.obj):
+                    toks_for_vec = (_tft(tri) if _tft is not None
+                                    else [tri.subject, tri.relation, tri.obj])
+                    for tok in toks_for_vec:
                         if tok and tok not in all_tokens:
                             all_tokens.append(tok)
                     _chunk_gate = _chunk_gate and tri.gate_agreement
@@ -587,7 +616,7 @@ def worker_encode(args):
             continue
 
         # ── SALIENCE: select top-12 by IDF ────────────────────
-        salient = _select_salient(all_tokens, idf, MAX_SALIENT_TOKENS, gazetteer)
+        salient = _select_salient(all_tokens, idf, max_salient_tokens, gazetteer)
 
         # ── ENCODE: superpose(salient_tokens) — no bind ──────
         vec = _encode_tokens(salient)
@@ -862,7 +891,7 @@ def worker_encode(args):
         "n_chunks": n,
         "n_encoded": n_encoded,
         "n_media_encoded": n_media_encoded,
-        "max_salient_tokens": MAX_SALIENT_TOKENS,
+        "max_salient_tokens": max_salient_tokens,
         "idf_vocab_size": len(idf),
         "dim": dim,
         "k": k,

@@ -42,7 +42,7 @@ existing shim.
 
 USAGE
 =====
-    # Autotune on (default): profile picks D from {4096, 8192, 16384, 32768}
+    # Autotune on (default): profile picks D from {256, 512, 1024, 2048, 4096, 8192, 16384}
     python -m encode.encode_triples \
         --source /path/to/triples.jsonl \
         --output /path/to/out_dir
@@ -88,7 +88,7 @@ from encode._autotune import (  # noqa: E402
 )
 
 
-DEFAULT_AUTOTUNE_GRID = (4096, 8192, 16384, 32768)
+DEFAULT_AUTOTUNE_GRID = (256, 512, 1024, 2048, 4096, 8192, 16384)
 
 
 def parse_args():
@@ -106,7 +106,7 @@ def parse_args():
                         "structural_v13/, corpus.jsonl, corpus_profile.json.")
     p.add_argument("--dim", type=int, default=None,
                    help="BSC dimension. Default: autotune from "
-                        "{4096,8192,16384,32768}. Pin to skip autotune.")
+                        "{256,512,1024,2048,4096,8192,16384}. Pin to skip autotune.")
     p.add_argument("--k", type=int, default=None,
                    help="BSC sparsity. Default: √dim (autotuned).")
     p.add_argument("--no-autotune", action="store_true",
@@ -146,15 +146,20 @@ def _count_records(source: Path) -> int:
     return count_records(source)
 
 
-def _quick_p99_atoms_sro(source: Path) -> int:
-    """Single-pass p99 of atom count (s+r tokens) per record. Used on
-    the --no-autotune path so max_slots derivation still has a p99
-    signal. Streams; constant memory."""
+def _quick_p99_atoms_sro(source: Path, sample_n: int = 1_000_000) -> int:
+    """Sample-bounded p99 of atom count (s+r tokens) per record. Used on
+    the --no-autotune / explicit-pin path so max_slots derivation still
+    has a p99 signal. Bounded at sample_n records — for SRO atomic
+    corpora the sample's p99 is a tight estimator of full p99, and
+    scanning past it would re-introduce the full-corpus scan we already
+    eliminated from the autotune path."""
     from ._autotune import atoms_for_sro_tier1
     from ._io import iter_json_records
     counts = []
-    for rec in iter_json_records(source):
+    for i, rec in enumerate(iter_json_records(source)):
         counts.append(atoms_for_sro_tier1(rec))
+        if i + 1 >= sample_n:
+            break
     if not counts:
         return 0
     counts.sort()
@@ -196,14 +201,19 @@ def autotune_dk(source: Path, output: Path, full_grid: List[int],
     n_sampled = 0
     with open(sample_path, "w", encoding="utf-8") as sf:
         for i, (s, r, o, _) in enumerate(_stream_triples(source)):
-            n_total += 1
             atoms = len(s.split()) + len(r.split())
             histogram[min(atoms, BUCKETS)] += 1
-            if i < sample_n:
-                sf.write(json.dumps({"i": i, "s": s, "r": r, "o": o},
-                                    ensure_ascii=False) + "\n")
-                sr_count[(s, r)] = sr_count.get((s, r), 0) + 1
-                n_sampled = i + 1
+            sf.write(json.dumps({"i": i, "s": s, "r": r, "o": o},
+                                ensure_ascii=False) + "\n")
+            sr_count[(s, r)] = sr_count.get((s, r), 0) + 1
+            n_sampled = i + 1
+            n_total = n_sampled
+            if n_sampled >= sample_n:
+                # Don't keep streaming the source past the sample — for
+                # SRO atomic corpora the sample's atom histogram is a
+                # statistically-tight estimator of the full p99 and the
+                # full scan added ~5 min on a 21M-record source.
+                break
 
     # p99 atoms from histogram
     cum = 0
@@ -360,6 +370,11 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
 
     # Stream input → ingest in batches → write sidecar inline. Single
     # file handle for the sidecar; OS handles flushing.
+    # Path B (key-only): encode (s, r) into the vector; o lives in the
+    # sidecar only. Forward (s,r → o) retrieval works through LSH;
+    # reverse (o,r) is undefined (object never entered the vector).
+    # Path A 3-atom encode broke LSH on partial queries (gold not in
+    # candidate set), so we accept the unidirectional cost here.
     with open(cpath, "w", encoding="utf-8") as sidecar_f:
         for s, r, o, raw_rec in _stream_triples(source):
             tx.append(sro_tier1_encode_text(s, r))
@@ -411,9 +426,11 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
 
     workers = resolve_workers(args.workers)
-    n_records = _count_records(source)
-    print(f"[input] source={source}  records={n_records:,}  workers={workers}",
-          flush=True)
+    # Skip the up-front _count_records pass — on a 1.9 GB / 21M source
+    # that scan alone burns ~5 min of wall time before any real work.
+    # The encode pass below counts records as it ingests; we report the
+    # final tally with [encode] ingest done.
+    print(f"[input] source={source}  workers={workers}", flush=True)
 
     # Decide (D, k, p99)
     discovery = None

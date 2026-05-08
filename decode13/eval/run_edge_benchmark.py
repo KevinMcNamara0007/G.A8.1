@@ -197,9 +197,10 @@ class StructuralV13:
         self.enable_hebbian = bool(enable_hebbian)
         self.hebbian_topk = int(hebbian_topk)
         from decode13 import build_structural_config
+        from encode._autotune import derive_k_constants
         cfg = build_structural_config(
             dim=dim, k=k,
-            max_slots=24,
+            max_slots=derive_k_constants(int(k))["max_slots"] if k else None,
             enable_bigram=True,
             enable_kv=True,
             enable_hebbian=self.enable_hebbian,
