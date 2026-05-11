@@ -142,50 +142,48 @@ class QueryService:
                     "(%s). Vector-arithmetic endpoints will be disabled.", e)
 
         t0 = time.perf_counter()
-        self._docs: Dict[int, dict] = {}
-        # BUG-G81-04: A81_SKIP_DOCS=1 skips the corpus dict materialization.
-        # Saves ~5 GB at 21M records. Result objects will have empty
-        # metadata fields; benchmarks and retrieval-only callers don't need
-        # the sidecar payload.
-        if os.environ.get("A81_SKIP_DOCS"):
-            t_corpus = time.perf_counter() - t0
-            self._has_hebbian = bool(self._pipe.config().enable_hebbian)
-            logger.info(
-                "QueryService ready: %d vectors, 0 corpus rows (A81_SKIP_DOCS=1) "
-                "(pipeline=%.2fs, hebbian=%s)",
-                self._pipe.size(), t_pipe, self._has_hebbian,
-            )
-            return
-        with open(paths["corpus"], "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                did = int(rec.get("doc_id", -1))
-                if did < 0:
-                    continue
-                self._docs[did] = rec
+        # BUG-G81-04 upstream fix (EHC@230c9f7): replace the ~5 GB
+        # self._docs Python dict at 21M with ehc.JsonlMmapReader. The
+        # reader builds (or loads) a magic-versioned .offsets sidecar
+        # (~168 MB at 21M), mmaps corpus.jsonl, and serves O(1)
+        # doc_id → line lookups. The OS pages the JSONL payload on
+        # demand instead of resident-in-RAM at load time.
+        #
+        # A81_SKIP_DOCS=1 still skips the reader entirely (kept for
+        # diagnostic / minimum-memory paths). Without the gate, the
+        # reader's ~168 MB resident cost is the new floor — far below
+        # the prior 5 GB dict.
+        self._docs_reader: Optional[Any] = None
+        if not os.environ.get("A81_SKIP_DOCS"):
+            try:
+                self._docs_reader = ehc.JsonlMmapReader.open(
+                    str(paths["corpus"]))
+            except Exception as e:
+                logger.warning(
+                    "QueryService: JsonlMmapReader unavailable (%s). "
+                    "Result objects will lack sidecar metadata.", e)
         t_corpus = time.perf_counter() - t0
 
         self._has_hebbian = bool(self._pipe.config().enable_hebbian)
+        n_corpus_rows = (
+            self._docs_reader.n_records() if self._docs_reader else 0)
         logger.info(
-            "QueryService ready: %d vectors, %d corpus rows "
+            "QueryService ready: %d vectors, %d corpus rows (mmap=%s) "
             "(pipeline=%.2fs, corpus=%.2fs, hebbian=%s)",
-            self._pipe.size(), len(self._docs), t_pipe, t_corpus,
-            self._has_hebbian,
+            self._pipe.size(), n_corpus_rows,
+            "yes" if self._docs_reader else "skipped",
+            t_pipe, t_corpus, self._has_hebbian,
         )
 
     # ── Introspection ─────────────────────────────────────────
     @property
     def stats(self) -> Dict[str, Any]:
         cfg = self._pipe.config()
+        n_corpus_rows = (
+            self._docs_reader.n_records() if self._docs_reader else 0)
         return {
             "total_vectors":  int(self._pipe.size()),
-            "corpus_rows":    len(self._docs),
+            "corpus_rows":    n_corpus_rows,
             "dim":            int(cfg.dim),
             "k":              int(cfg.k),
             "hebbian":        self._has_hebbian,
@@ -530,7 +528,14 @@ class QueryService:
         }
 
     def _lookup(self, doc_id: int) -> Dict[str, Any]:
-        rec = self._docs.get(doc_id) or {}
+        rec: Dict[str, Any] = {}
+        if self._docs_reader is not None:
+            try:
+                line = self._docs_reader.line(doc_id)
+                if line:
+                    rec = json.loads(line)
+            except (IndexError, json.JSONDecodeError, Exception):
+                rec = {}
         # Prefer explicit media_url; fall back to url only if it has a
         # media extension (avoids treating post URLs as media).
         media_url = rec.get("media_url", "")

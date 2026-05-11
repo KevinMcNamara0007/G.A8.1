@@ -368,85 +368,54 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
 
     cpath = output / "corpus.jsonl"
     t0 = time.perf_counter()
-    # BATCH bumped from 10k → 50k: at scale the C++ workers process a batch
-    # in milliseconds; larger batches reduce per-batch wake-up overhead and
-    # let main thread spend more wall time inside ingest_batch_parallel
-    # (GIL released) and less in Python list management.
+    # BATCH = 50_000: large enough that the C++ ingest workers stay busy
+    # between hand-offs, small enough that memory for the in-flight batch
+    # stays bounded. C++ workers process each batch in milliseconds at
+    # D=512 with AVX-512.
     BATCH = 50_000
-
-    # orjson.dumps is ~3-5× faster than stdlib json.dumps on Wikidata-shaped
-    # records and returns bytes directly (no encode pass). Falls back to
-    # stdlib if not installed. Toggles the file open mode and the bytes
-    # appended at line-end below.
-    try:
-        import orjson as _orjson
-        _has_orjson = True
-    except ImportError:
-        _orjson = None
-        _has_orjson = False
-    tx, ix = [], []
-    n = 0
 
     # Path B (key-only): encode (s, r) into the vector; o lives in the
     # sidecar only. Forward (s,r → o) retrieval works through LSH;
     # reverse (o,r) is undefined (object never entered the vector).
-    # Path A 3-atom encode broke LSH on partial queries (gold not in
-    # candidate set), so we accept the unidirectional cost here.
     #
-    # BUG-G81-03 mitigation — three-thread pipeline so the C++ ingest
-    # workers don't sit dormant on a futex while the Python loop builds
-    # the next batch:
+    # Two-thread pipeline running on top of the EHC C++ kernels. Both
+    # downstream kernels release the GIL, so the main thread can keep
+    # building the next batch while either is in flight.
     #
-    #   main thread       — streams the source, computes the SRO key
-    #                       text, hands sidecar dicts to the writer
-    #                       queue, hands (tx, ix) batches to the ingest
-    #                       queue. Never blocks on C++.
-    #   ingest_thread     — drains batch_q and calls
-    #                       pipe.ingest_batch_parallel(...). The C++
-    #                       side releases the GIL during the batch, so
-    #                       main is free to build the next one in
-    #                       parallel. Queue depth = 4 keeps ~3 batches
-    #                       ahead of the C++ workers at all times.
-    #   sidecar_thread    — drains sidecar_q and writes corpus.jsonl.
-    #                       json.dumps + file write happen off the
-    #                       main loop entirely.
+    #   main thread     — streams the source, computes the SRO key text,
+    #                     accumulates parallel batches for ingest + sidecar,
+    #                     hands each off to the respective queue.
+    #   ingest_thread   — drains batch_q → pipe.ingest_batch_parallel(...).
+    #   sidecar_thread  — drains sidecar_q → ehc.JsonlSidecarAppender.
+    #                     The C++ appender formats AND writes the JSONL
+    #                     line entirely off-GIL (BUG-G81-03 upstream fix
+    #                     from EHC@230c9f7). Replaces the prior Python
+    #                     json.dumps + file write that bottlenecked encode
+    #                     at the GIL.
     #
-    # The SRO key text is also cached per-record (was computed twice
-    # — once for tx, once for the sidecar dict).
-    #
-    # Combined effect: C++ workers' futex-wait time drops because the
-    # batch queue is never empty until the source is exhausted.
-    # Symptom on 21M before this fix was 75% wasted CPU
-    # (97% main / ~0% workers); diagnostic in bugs_for_kevin.md
-    # under BUG-G81-03.
+    # Queue depth = 4 keeps ~3 batches ahead of each C++ side at all
+    # times. The SRO key text is cached per-record (was computed twice
+    # — once for tx, once for the sidecar payload).
     import queue, threading
-    sidecar_q: "queue.Queue" = queue.Queue(maxsize=BATCH * 4)
+    appender = ehc.JsonlSidecarAppender(str(cpath))
+    sidecar_q: "queue.Queue" = queue.Queue(maxsize=4)
     batch_q: "queue.Queue" = queue.Queue(maxsize=4)
     writer_err: list = []
     ingest_err: list = []
 
     def _sidecar_writer():
         try:
-            # Open binary when using orjson (its dumps returns bytes);
-            # text when falling back to stdlib json.
-            if _has_orjson:
-                with open(cpath, "wb") as f:
-                    while True:
-                        item = sidecar_q.get()
-                        if item is None:
-                            sidecar_q.task_done()
-                            return
-                        f.write(_orjson.dumps(item) + b"\n")
-                        sidecar_q.task_done()
-            else:
-                with open(cpath, "w", encoding="utf-8") as f:
-                    while True:
-                        item = sidecar_q.get()
-                        if item is None:
-                            sidecar_q.task_done()
-                            return
-                        f.write(json.dumps(item, ensure_ascii=False) + "\n")
-                        sidecar_q.task_done()
+            while True:
+                item = sidecar_q.get()
+                if item is None:
+                    appender.flush()
+                    appender.close()
+                    sidecar_q.task_done()
+                    return
+                doc_ids_b, subjects_b, relations_b, objects_b, extras_b = item
+                appender.append_sro_batch(
+                    doc_ids_b, subjects_b, relations_b, objects_b, extras_b)
+                sidecar_q.task_done()
         except Exception as exc:  # surface to main thread
             writer_err.append(exc)
 
@@ -468,37 +437,52 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
     writer_thread.start()
     ingest_thread.start()
 
+    tx, ix = [], []
+    doc_ids_b, subjects_b, relations_b, objects_b, extras_b = [], [], [], [], []
+    n = 0
+
     try:
         for s, r, o, raw_rec in _stream_triples(source):
             sro_text = sro_tier1_encode_text(s, r)
             tx.append(sro_text)
             ix.append(n)
-            sidecar_rec = {"doc_id": n, "subject": s, "relation": r,
-                            "object": o,
-                            "text": sro_text,
-                            **{k_: v for k_, v in raw_rec.items()
-                               if k_ not in ("subject", "relation", "object")}}
-            sidecar_q.put(sidecar_rec)
+            doc_ids_b.append(n)
+            subjects_b.append(s)
+            relations_b.append(r)
+            objects_b.append(o)
+            # extras_json contract (JsonlSidecarAppender): the appender
+            # writes `{"doc_id":N,"subject":S,"relation":R,"object":O,"text":"S R"EXTRAS}`
+            # — note `text` is written by the appender itself (Tier-1 SRO
+            # contract), so don't include it here. EXTRAS must begin with
+            # `,` and contain valid JSON key:value pairs. Empty string = no
+            # extras (e.g. records with only s/r/o fields).
+            extras = {k_: v for k_, v in raw_rec.items()
+                      if k_ not in ("subject", "relation", "object")}
+            if extras:
+                extras_b.append("," + json.dumps(extras, ensure_ascii=False)[1:-1])
+            else:
+                extras_b.append("")
             n += 1
             if len(tx) >= BATCH:
-                # Hand off ownership of these lists to the ingest thread
-                # and allocate fresh ones — can't .clear() what another
-                # thread is reading from.
+                # Hand off list ownership to the threads; allocate fresh.
                 batch_q.put((tx, ix))
+                sidecar_q.put((doc_ids_b, subjects_b, relations_b, objects_b, extras_b))
                 tx, ix = [], []
+                doc_ids_b, subjects_b, relations_b, objects_b, extras_b = [], [], [], [], []
                 if n % 1_000_000 == 0:
                     el = time.perf_counter() - t0
                     print(f"[encode]   queued {n:,} in {el:.1f}s "
                           f"({n/el:,.0f}/s)", flush=True)
         if tx:
             batch_q.put((tx, ix))
+            sidecar_q.put((doc_ids_b, subjects_b, relations_b, objects_b, extras_b))
     finally:
         # Drain ingest first so pipe is fully populated before save.
         batch_q.put(None)
         ingest_thread.join()
         if ingest_err:
             raise ingest_err[0]
-        # Then drain sidecar.
+        # Then flush + close the C++ appender.
         sidecar_q.put(None)
         writer_thread.join()
         if writer_err:
