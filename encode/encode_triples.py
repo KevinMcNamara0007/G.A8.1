@@ -364,7 +364,22 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
 
     cpath = output / "corpus.jsonl"
     t0 = time.perf_counter()
-    BATCH = 10_000
+    # BATCH bumped from 10k → 50k: at scale the C++ workers process a batch
+    # in milliseconds; larger batches reduce per-batch wake-up overhead and
+    # let main thread spend more wall time inside ingest_batch_parallel
+    # (GIL released) and less in Python list management.
+    BATCH = 50_000
+
+    # orjson.dumps is ~3-5× faster than stdlib json.dumps on Wikidata-shaped
+    # records and returns bytes directly (no encode pass). Falls back to
+    # stdlib if not installed. Toggles the file open mode and the bytes
+    # appended at line-end below.
+    try:
+        import orjson as _orjson
+        _has_orjson = True
+    except ImportError:
+        _orjson = None
+        _has_orjson = False
     tx, ix = [], []
     n = 0
 
@@ -374,43 +389,80 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
     # Path A 3-atom encode broke LSH on partial queries (gold not in
     # candidate set), so we accept the unidirectional cost here.
     #
-    # BUG-G81-03 mitigation: producer/consumer split so the C++ ingest
-    # workers don't sit dormant on a futex while the Python sidecar loop
-    # serializes one record at a time. The old loop held the GIL through
-    # json.dumps + sidecar_f.write per record, and the C++ workers only
-    # fired once every BATCH records — three workers slept at ~0% CPU
-    # for the rest of wall time, so encode throughput dropped from 50k/s
-    # @ 1M to ~9k/s @ 21M.
+    # BUG-G81-03 mitigation — three-thread pipeline so the C++ ingest
+    # workers don't sit dormant on a futex while the Python loop builds
+    # the next batch:
     #
-    # This split:
-    #   1. Caches the SRO key text per record (was computed twice — once
-    #      for `tx`, once inside the sidecar dict). One-line CPU saving.
-    #   2. Hands sidecar dicts to a writer thread via a bounded Queue;
-    #      json.dumps + write happen off the main loop. While the main
-    #      thread is blocked in `ingest_batch_parallel` (GIL released by
-    #      the C++ side), the writer drains accumulated records.
+    #   main thread       — streams the source, computes the SRO key
+    #                       text, hands sidecar dicts to the writer
+    #                       queue, hands (tx, ix) batches to the ingest
+    #                       queue. Never blocks on C++.
+    #   ingest_thread     — drains batch_q and calls
+    #                       pipe.ingest_batch_parallel(...). The C++
+    #                       side releases the GIL during the batch, so
+    #                       main is free to build the next one in
+    #                       parallel. Queue depth = 4 keeps ~3 batches
+    #                       ahead of the C++ workers at all times.
+    #   sidecar_thread    — drains sidecar_q and writes corpus.jsonl.
+    #                       json.dumps + file write happen off the
+    #                       main loop entirely.
     #
-    # Queue is bounded so the writer can't fall hopelessly behind on a
-    # slow disk — backpressure keeps memory predictable.
+    # The SRO key text is also cached per-record (was computed twice
+    # — once for tx, once for the sidecar dict).
+    #
+    # Combined effect: C++ workers' futex-wait time drops because the
+    # batch queue is never empty until the source is exhausted.
+    # Symptom on 21M before this fix was 75% wasted CPU
+    # (97% main / ~0% workers); diagnostic in bugs_for_kevin.md
+    # under BUG-G81-03.
     import queue, threading
     sidecar_q: "queue.Queue" = queue.Queue(maxsize=BATCH * 4)
+    batch_q: "queue.Queue" = queue.Queue(maxsize=4)
     writer_err: list = []
+    ingest_err: list = []
 
     def _sidecar_writer():
         try:
-            with open(cpath, "w", encoding="utf-8") as f:
-                while True:
-                    item = sidecar_q.get()
-                    if item is None:
+            # Open binary when using orjson (its dumps returns bytes);
+            # text when falling back to stdlib json.
+            if _has_orjson:
+                with open(cpath, "wb") as f:
+                    while True:
+                        item = sidecar_q.get()
+                        if item is None:
+                            sidecar_q.task_done()
+                            return
+                        f.write(_orjson.dumps(item) + b"\n")
                         sidecar_q.task_done()
-                        return
-                    f.write(json.dumps(item, ensure_ascii=False) + "\n")
-                    sidecar_q.task_done()
+            else:
+                with open(cpath, "w", encoding="utf-8") as f:
+                    while True:
+                        item = sidecar_q.get()
+                        if item is None:
+                            sidecar_q.task_done()
+                            return
+                        f.write(json.dumps(item, ensure_ascii=False) + "\n")
+                        sidecar_q.task_done()
         except Exception as exc:  # surface to main thread
             writer_err.append(exc)
 
+    def _ingest_worker():
+        try:
+            while True:
+                item = batch_q.get()
+                if item is None:
+                    batch_q.task_done()
+                    return
+                t_batch, i_batch = item
+                pipe.ingest_batch_parallel(t_batch, i_batch, workers)
+                batch_q.task_done()
+        except Exception as exc:
+            ingest_err.append(exc)
+
     writer_thread = threading.Thread(target=_sidecar_writer, daemon=True)
+    ingest_thread = threading.Thread(target=_ingest_worker, daemon=True)
     writer_thread.start()
+    ingest_thread.start()
 
     try:
         for s, r, o, raw_rec in _stream_triples(source):
@@ -425,15 +477,24 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
             sidecar_q.put(sidecar_rec)
             n += 1
             if len(tx) >= BATCH:
-                pipe.ingest_batch_parallel(tx, ix, workers)
-                tx.clear(); ix.clear()
+                # Hand off ownership of these lists to the ingest thread
+                # and allocate fresh ones — can't .clear() what another
+                # thread is reading from.
+                batch_q.put((tx, ix))
+                tx, ix = [], []
                 if n % 1_000_000 == 0:
                     el = time.perf_counter() - t0
-                    print(f"[encode]   ingested {n:,} in {el:.1f}s "
+                    print(f"[encode]   queued {n:,} in {el:.1f}s "
                           f"({n/el:,.0f}/s)", flush=True)
         if tx:
-            pipe.ingest_batch_parallel(tx, ix, workers)
+            batch_q.put((tx, ix))
     finally:
+        # Drain ingest first so pipe is fully populated before save.
+        batch_q.put(None)
+        ingest_thread.join()
+        if ingest_err:
+            raise ingest_err[0]
+        # Then drain sidecar.
         sidecar_q.put(None)
         writer_thread.join()
         if writer_err:
