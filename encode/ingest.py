@@ -424,6 +424,32 @@ class IncrementalIngest:
             del idx, lsh, data, lsh_data, lsh_arrays
             gc.collect()
 
+            # ── Extend tier manifest for newly-ingested vectors ──
+            # BUG-G81-05 upstream fix (EHC@230c9f7): if the shard was
+            # encoded with tier routing, decode13.QueryService expects
+            # tier_manifest.{json,npy} to have one entry per vector.
+            # Without this, manifest_ids_for() raises IndexError on the
+            # first query that returns a freshly-appended vec_id.
+            #
+            # Strategy: load existing manifest via ehc.TierManifestStore.
+            # If absent → shard wasn't tier-routed; nothing to extend.
+            # If present and aligned to start_id → extend with structured_atomic
+            # (tier id 0) for the new vectors. extend_repeat is the C++
+            # fast path for a homogeneous append.
+            try:
+                store = ehc.TierManifestStore.load(str(shard_dir))
+                if store is not None:
+                    existing_n = store.n_vectors()
+                    if existing_n == start_id:
+                        store.extend_repeat(0, n_new)  # 0 = structured_atomic
+                        store.save(str(shard_dir))
+                    else:
+                        print(f"  [shard {shard_id:04d}] tier_manifest "
+                              f"out of sync (manifest={existing_n}, "
+                              f"index={start_id}); skipping tier extend")
+            except Exception as exc:
+                print(f"  [shard {shard_id:04d}] tier_manifest extend failed: {exc}")
+
             # ── Save sidecar delta (EHS1) ────────────────────
             delta_name = next_delta_name(shard_dir)
             delta_path = shard_dir / delta_name
