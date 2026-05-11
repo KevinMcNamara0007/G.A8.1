@@ -28,10 +28,22 @@ VERSION = "v1"
 
 
 def _atomize(field_value: str) -> str:
-    """Collapse whitespace without touching underscores or case.
+    """Collapse whitespace and lowercase the field; keep underscores.
 
-    Lowercasing happens because the codebook hash is case-insensitive
-    in v12.5 and we preserve that property for retrieval compatibility.
+    Lowercasing is the corpus-query symmetry contract for Tier 1:
+    `_atomize` is called by both the encode-side
+    `StructuredAtomicPipeline.emit` (worker_encode.py:549) and the
+    query-side `decode13.QueryService.query` (query_service.py:494
+    via `[a.lower().strip() ...]`). The codebook itself is hash-mode
+    and case-sensitive in v13.1 — `cb.encode_token("Q1860")` and
+    `cb.encode_token("q1860")` produce different sparse signatures.
+    The lowercase boundary at this function is what makes encode and
+    query produce matching VSAs. Verified empirically 2026-05-07 in
+    the M3 wire test (lowercase path → Hit@1 = 1.0; capitalized
+    path → 0.30 / rank 3 for the same gold record). Anything that
+    moves or replaces `_atomize` must preserve the lowercase
+    boundary or Hit@1 will collapse silently.
+
     Underscores are kept — that is the whole point of Tier 1.
     """
     if not field_value:

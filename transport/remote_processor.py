@@ -89,6 +89,9 @@ class RemoteProcessor:
             }
 
     # ── Profile pin enforcement ──────────────────────────
+    # Only per-request server-side state. No replay-nonce set, no rate-limit
+    # counter — see WP v1.2 §6.3: confidentiality is delivered by the algebraic
+    # (§1.2 BSC OTP+QNR) + transport layers, not by application-layer hardening.
     def _check_and_pin(self, session_id: str, profile: ProfileMetadata) -> None:
         mode = self.config.pin_mode
         if mode == "off":

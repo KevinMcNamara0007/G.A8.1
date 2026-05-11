@@ -584,6 +584,23 @@ end-to-end. Empty hits at this stage is expected — shard upload is Day 2.
 | TLS SPKI cert-pinning hook       | **no** (urllib limitation; use SSH-tunnel) |
 | Codebook-update sharing (n clients in sync) | **no** (Day 2) |
 
+**Profile-pin enforcement contract** (verified empirically 2026-05-07
+in the M3 wire test):
+
+| Mismatch type | Enforced? | Where |
+|---|---|---|
+| Within-session profile change (mode=session) | **yes** | `RemoteProcessor._check_and_pin` |
+| Cross-session profile change (mode=strict) | yes when set | same |
+| Declared profile dim ≠ actual vec dim | **yes** | `remote_processor.py:124` (raises `PinViolation`) |
+| Declared profile dim ≠ loaded corpus dim | **NO** | by design — a processor may host shards of multiple geometries and route by `query.profile.dim` at search time |
+
+The last row is intentional but worth calling out: if you want
+declared-profile-vs-corpus consistency, enforce it at the operator
+level (one corpus per processor instance) rather than expecting
+the wire to reject. Per-query dim sanity (row 3) catches client-side
+packing bugs and is sufficient to prevent malformed VSAs from
+landing in the search loop.
+
 ---
 
 ## 5. M3 → M4 migration (scaffold only)

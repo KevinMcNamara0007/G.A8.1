@@ -116,6 +116,9 @@ class ProfileMetadata:
 
 
 # ── Query envelope ───────────────────────────────────────
+# No nonce, MAC, or seq number on this envelope by design — confidentiality
+# rests on the two-layer posture in WP v1.2 §6.3 (algebraic OTP+QNR from §1.2
+# + SSH/TLS transport). Generic transport hardening here would be redundant.
 @dataclass
 class QueryRequest:
     """JSON wire shape for an edge → remote query."""
