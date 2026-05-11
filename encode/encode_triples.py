@@ -358,19 +358,56 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
     tx, ix = [], []
     n = 0
 
-    # Stream input → ingest in batches → write sidecar inline. Single
-    # file handle for the sidecar; OS handles flushing.
-    with open(cpath, "w", encoding="utf-8") as sidecar_f:
+    # BUG-G81-03 mitigation: producer/consumer split so the C++ ingest
+    # workers don't sit dormant on a futex while the Python sidecar loop
+    # serializes one record at a time.
+    #
+    # The old loop held the GIL through json.dumps + sidecar_f.write per
+    # record, and the C++ workers only fired once every BATCH records (10k)
+    # — three workers slept at ~0% CPU for the rest of wall time, so encode
+    # throughput dropped from 50k/s @ 1M to ~9k/s @ 21M.
+    #
+    # This split:
+    #   1. Caches the SRO key text per record (was computed twice — once
+    #      for `tx`, once inside the sidecar dict). One-line CPU saving.
+    #   2. Hands sidecar dicts to a writer thread via a bounded Queue;
+    #      json.dumps + write happen off the main loop. While the main
+    #      thread is blocked in `ingest_batch_parallel` (GIL released by
+    #      the C++ side), the writer drains accumulated records.
+    #
+    # Queue is bounded so the writer can't fall hopelessly behind on a
+    # slow disk — backpressure keeps memory predictable.
+    import queue, threading
+    sidecar_q: "queue.Queue" = queue.Queue(maxsize=BATCH * 4)
+    writer_err: list = []
+
+    def _sidecar_writer():
+        try:
+            with open(cpath, "w", encoding="utf-8") as f:
+                while True:
+                    item = sidecar_q.get()
+                    if item is None:
+                        sidecar_q.task_done()
+                        return
+                    f.write(json.dumps(item, ensure_ascii=False) + "\n")
+                    sidecar_q.task_done()
+        except Exception as exc:  # surface to main thread
+            writer_err.append(exc)
+
+    writer_thread = threading.Thread(target=_sidecar_writer, daemon=True)
+    writer_thread.start()
+
+    try:
         for s, r, o, raw_rec in _stream_triples(source):
-            tx.append(sro_tier1_encode_text(s, r))
+            sro_text = sro_tier1_encode_text(s, r)
+            tx.append(sro_text)
             ix.append(n)
-            # Build per-record sidecar dict, write immediately, drop it.
             sidecar_rec = {"doc_id": n, "subject": s, "relation": r,
                             "object": o,
-                            "text": sro_tier1_encode_text(s, r),
+                            "text": sro_text,
                             **{k_: v for k_, v in raw_rec.items()
                                if k_ not in ("subject", "relation", "object")}}
-            sidecar_f.write(json.dumps(sidecar_rec, ensure_ascii=False) + "\n")
+            sidecar_q.put(sidecar_rec)
             n += 1
             if len(tx) >= BATCH:
                 pipe.ingest_batch_parallel(tx, ix, workers)
@@ -381,6 +418,11 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
                           f"({n/el:,.0f}/s)", flush=True)
         if tx:
             pipe.ingest_batch_parallel(tx, ix, workers)
+    finally:
+        sidecar_q.put(None)
+        writer_thread.join()
+        if writer_err:
+            raise writer_err[0]
 
     el = time.perf_counter() - t0
     print(f"[encode] ingest done: {n:,} records in {el:.1f}s "

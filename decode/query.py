@@ -128,9 +128,12 @@ class QueryService:
         # memory; acceptable for the corpus scales v13.1 targets. Deferred
         # optimization: expose the pipeline's internal LSH via EHC so
         # we don't need the second handle.
+        # BUG-G81-04: A81_SKIP_RAW_LSH=1 disables this handle. Saves ~2.3 GB
+        # at 21M / D=128. Vector-arithmetic endpoints are disabled when set;
+        # text-query path is unaffected.
         self._lsh: Optional[Any] = None
         lsh_path = self._pipe_dir / "lsh.bin"
-        if lsh_path.exists():
+        if lsh_path.exists() and not os.environ.get("A81_SKIP_RAW_LSH"):
             try:
                 self._lsh = ehc.BSCLSHIndex.load(str(lsh_path))
             except Exception as e:
@@ -140,6 +143,19 @@ class QueryService:
 
         t0 = time.perf_counter()
         self._docs: Dict[int, dict] = {}
+        # BUG-G81-04: A81_SKIP_DOCS=1 skips the corpus dict materialization.
+        # Saves ~5 GB at 21M records. Result objects will have empty
+        # metadata fields; benchmarks and retrieval-only callers don't need
+        # the sidecar payload.
+        if os.environ.get("A81_SKIP_DOCS"):
+            t_corpus = time.perf_counter() - t0
+            self._has_hebbian = bool(self._pipe.config().enable_hebbian)
+            logger.info(
+                "QueryService ready: %d vectors, 0 corpus rows (A81_SKIP_DOCS=1) "
+                "(pipeline=%.2fs, hebbian=%s)",
+                self._pipe.size(), t_pipe, self._has_hebbian,
+            )
+            return
         with open(paths["corpus"], "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
