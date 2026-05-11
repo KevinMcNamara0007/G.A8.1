@@ -131,7 +131,10 @@ def _stream_triples(source: Path):
     """Yield (subject, relation, object, full_record_dict) per source
     record. Source may be JSONL *or* a single JSON array (Wikidata /
     DBpedia dumps ship that way); format is auto-detected by `_io`."""
-    from ._io import iter_json_records
+    # BUG-G81-06: absolute import via the encode package — works both
+    # as `python -m encode.encode_triples` and `python encode/encode_triples.py`
+    # because sys.path was extended with _HERE.parent at the top of this file.
+    from encode._io import iter_json_records
     for rec in iter_json_records(source):
         yield (
             rec.get("subject", "") or "",
@@ -142,7 +145,7 @@ def _stream_triples(source: Path):
 
 
 def _count_records(source: Path) -> int:
-    from ._io import count_records
+    from encode._io import count_records  # BUG-G81-06
     return count_records(source)
 
 
@@ -153,8 +156,9 @@ def _quick_p99_atoms_sro(source: Path, sample_n: int = 1_000_000) -> int:
     corpora the sample's p99 is a tight estimator of full p99, and
     scanning past it would re-introduce the full-corpus scan we already
     eliminated from the autotune path."""
-    from ._autotune import atoms_for_sro_tier1
-    from ._io import iter_json_records
+    # BUG-G81-06: see _stream_triples comment for the absolute-import rationale.
+    from encode._autotune import atoms_for_sro_tier1
+    from encode._io import iter_json_records
     counts = []
     for i, rec in enumerate(iter_json_records(source)):
         counts.append(atoms_for_sro_tier1(rec))
@@ -253,7 +257,7 @@ def autotune_dk(source: Path, output: Path, full_grid: List[int],
     warmup = unique_qs[200:220] if len(unique_qs) > 220 else bench[:20]
     del sr_count  # release the dict; query set is now self-contained
 
-    from ._autotune import derive_k_constants
+    from encode._autotune import derive_k_constants  # BUG-G81-06
     results = []
     for dim in swept_zone:
         k = max(1, int(round(math.sqrt(dim))))
@@ -352,7 +356,7 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
     pipe_dir = output / "structural_v13"
     pipe_dir.mkdir(parents=True, exist_ok=True)
 
-    from ._autotune import derive_k_constants
+    from encode._autotune import derive_k_constants  # BUG-G81-06
     consts = derive_k_constants(k, p99_atoms=p99_atoms)
     pipe = ehc.StructuralPipelineV13(
         build_sro_tier1_config(dim=dim, k=k, max_slots=consts["max_slots"]))

@@ -568,6 +568,59 @@ def _flush_shard(path, buffer):
             pickle.dump(item, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
+def _assert_encoding_mode_set():
+    """BUG-DATA-01 — refuse to run when neither tier-routed nor
+    closed-loop is selected.
+
+    `encode.py` without `A81_TIER_ROUTED=1` (or `A81_CLOSED_LOOP=1`)
+    used to produce shards with no `tier_manifest.json` *and* no
+    closed-loop fixups, after which decode13.benchmark.run_production
+    reported 0% Hit@1 in both modes with no warning — the only tell
+    was `tier_counts={'structured_atomic': 0, ...}` deep in decode
+    startup logs.
+
+    This guard fails loudly at the start of `run_encode` (the only
+    Python entry point that has this footgun — `encode_triples.py` is
+    the canonical SRO path and doesn't need either flag). Pure
+    process-startup check; no per-record cost, no allocations
+    retained past return.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    try:
+        from config import cfg as _c
+    except ImportError:
+        # If even config is unimportable we can't validate; let the
+        # downstream import errors carry the failure.
+        return
+    tier_routed = bool(getattr(_c, "TIER_ROUTED_ENABLED", False))
+    closed_loop = bool(getattr(_c, "CLOSED_LOOP_ENABLED", False))
+    if tier_routed or closed_loop:
+        return
+    # Honor an explicit opt-out flag if a caller really wants the
+    # legacy "produce whatever falls out" behavior (e.g. tooling that
+    # only needs the centroids + sidecars and never touches Hit@k).
+    if os.environ.get("A81_ALLOW_UNBENCHMARKABLE", "").lower() in (
+            "1", "true", "yes", "on"):
+        print("  [encode] WARNING: A81_ALLOW_UNBENCHMARKABLE set — "
+              "shards will lack tier_manifest.json and closed-loop "
+              "fixups; decode13.benchmark.run_production will report "
+              "0% Hit@k against them.", file=sys.stderr, flush=True)
+        return
+    print(
+        "\n[encode] ABORT — no encoding mode selected.\n"
+        "  Running encode.py with neither A81_TIER_ROUTED=1 nor "
+        "A81_CLOSED_LOOP=1 produces shards that no benchmark mode can "
+        "use (silent 0% Hit@k, BUG-DATA-01).\n"
+        "  Pick one of:\n"
+        "    A81_TIER_ROUTED=1   — tier-routed v13 (PlanB) shards\n"
+        "    A81_CLOSED_LOOP=1   — baseline closed-loop shards\n"
+        "  Or use encode_triples.py for SRO data (no env vars needed).\n"
+        "  To override (legacy tooling only):\n"
+        "    A81_ALLOW_UNBENCHMARKABLE=1\n",
+        file=sys.stderr, flush=True)
+    sys.exit(6)
+
+
 def run_encode(
     source: str,
     output_dir: str,
@@ -578,6 +631,7 @@ def run_encode(
     k: int = 128,
     media_dir: str = None,
 ):
+    _assert_encoding_mode_set()
     t0 = time.perf_counter()
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
