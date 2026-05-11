@@ -155,11 +155,18 @@ def build_sro_tier1_config(
 
     Measured result at 5M: Hit@1 = 100%, p50 latency = 33 ms.
     """
-    # max_slots defaults to 24 for back-compat; callers that autotune
-    # pass a k-derived value via encode/_autotune.derive_k_constants().
+    # max_slots derives from k via the canonical recipe (slots=k, capped
+    # at 256). Callers that autotune still pass an explicit max_slots
+    # which wins over the derivation. Falls back to 24 only when neither
+    # k nor max_slots is supplied (legacy back-compat path).
+    if max_slots is None and k is not None:
+        from encode._autotune import derive_k_constants
+        max_slots = derive_k_constants(int(k))["max_slots"]
+    elif max_slots is None:
+        max_slots = 24
     return build_config(
         dim=dim, k=k, codebook_seed=codebook_seed,
-        max_slots=24 if max_slots is None else int(max_slots),
+        max_slots=int(max_slots),
         enable_bigram=True,
         enable_kv=True,
         enable_hebbian=False,
@@ -170,19 +177,34 @@ def build_sro_tier1_config(
     )
 
 
-def sro_tier1_encode_text(subject: str, relation: str) -> str:
-    """Return the KEY text to ingest for an SRO Tier-1 record.
+def sro_tier1_encode_text(subject: str, relation: str,
+                          obj: str = "") -> str:
+    """Return the encode text for an SRO Tier-1 record.
 
-    Keeps punctuation and underscores so the C++ tokenizer treats
-    compound tokens (`lalit_kumar_goel`) as atomic.
+    Path A (full design): pass all three atoms — `f"{s} {r} {o}"`. The
+    object atom (compound, e.g. `wolverhampton_wanderers_fc`) becomes
+    O' — a single canonical token contributed to the superposition,
+    while the full record stays in the sidecar (corpus.jsonl). This
+    gives each (s, r, o) a distinct vector and enables bidirectional
+    queries (s,r→o and o,r→s).
+
+    Path B (key-only legacy): omit `obj` to fall back to `f"{s} {r}"`,
+    which is what `build_sro_tier1_config` originally documented.
+    Records sharing (s, r) collide to the same vector under Path B.
     """
+    if obj:
+        return f"{subject} {relation} {obj}"
     return f"{subject} {relation}"
 
 
-def sro_tier1_query_text(subject: str, relation: str) -> str:
-    """Return the query text for an SRO Tier-1 lookup — identical shape
-    to the ingest text so query self-matches against its gold key."""
-    return f"{subject} {relation}"
+def sro_tier1_query_text(subject: str = "", relation: str = "",
+                         obj: str = "") -> str:
+    """Return the query text for an SRO Tier-1 lookup. All three are
+    optional so callers can issue forward (s,r→o), reverse (o,r→s),
+    or full (s,r,o self-verify) queries. Empty fields drop out of the
+    superposition."""
+    parts = [p for p in (subject, relation, obj) if p]
+    return " ".join(parts)
 
 
 def load_pipeline(shard_dir: str) -> "ehc.StructuralPipelineV13":

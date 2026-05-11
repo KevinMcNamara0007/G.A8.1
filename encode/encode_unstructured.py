@@ -44,7 +44,7 @@ decode/query.py shim:
 
 USAGE
 =====
-    # Autotune on (default): profile picks D from {4096, 8192, 16384, 32768}
+    # Autotune on (default): profile picks D from {256, 512, 1024, 2048, 4096, 8192, 16384}
     python -m encode.encode_unstructured \
         --source /path/to/messages.jsonl \
         --output /path/to/out_dir
@@ -86,7 +86,7 @@ from encode._autotune import (  # noqa: E402
 )
 
 
-DEFAULT_AUTOTUNE_GRID = (4096, 8192, 16384, 32768)
+DEFAULT_AUTOTUNE_GRID = (256, 512, 1024, 2048, 4096, 8192, 16384)
 
 
 def parse_args():
@@ -103,7 +103,7 @@ def parse_args():
                    help="Output directory.")
     p.add_argument("--dim", type=int, default=None,
                    help="BSC dimension. Default: autotune from "
-                        "{4096,8192,16384,32768}.")
+                        "{256,512,1024,2048,4096,8192,16384}.")
     p.add_argument("--k", type=int, default=None,
                    help="BSC sparsity. Default: √dim (autotuned).")
     p.add_argument("--no-autotune", action="store_true",

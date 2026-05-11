@@ -5,10 +5,10 @@ so the prediction logic + audit trail stay consistent.
 
 DESIGN
 ======
-Brute-force sweeping all four D values in {4096, 8192, 16384, 32768}
-costs 4 full encodes × the sample size. For most corpora 2 of those D
-values are wasted — we already have evidence from the corpus itself
-about which D zone is even plausible.
+Brute-force sweeping all D values in {256, 512, 1024, 2048, 4096,
+8192, 16384} costs 7 full encodes × the sample size. For most corpora
+4–5 of those D values are wasted — we already have evidence from the
+corpus itself about which D zone is even plausible.
 
 ZONE PREDICTION
 ===============
@@ -19,14 +19,18 @@ pathological outliers.
 
 Heuristic mapping (built from edge + wikidata empirical results plus
 BSC capacity theory). Conservative: always includes one D above the
-predicted floor as a safety check.
+predicted floor as a safety check. The atomic-SRO zone shifted down
+after the 21.3M Wikidata empirical run found D=512 holding 100%
+unique-key Hit@1 — Plate's k² formula is overconservative for
+exact-match retrieval (no unbinding) so we no longer treat D≥2048
+as a floor.
 
   p99_atoms  ⇒  predicted zone     rationale
   ─────────     ─────────────     ─────────────────────────────────
-   ≤  8         {4096, 8192}      pure SRO triples, atomic lookups
-    9 – 24     {4096, 8192,16384} short narratives, social posts
-   25 – 80     {8192,16384,32768} long narratives, document chunks
-   > 80        {16384, 32768}     deep ontologies, large docs
+   ≤  8         {256, 512, 1024} pure SRO triples, atomic lookups
+    9 – 24     {512,1024,2048}   short narratives, social posts
+   25 – 200    {1024,...,8192}   long narratives, document chunks
+   > 200       {2048,...,16384}  deep ontologies, large docs
 
 DISCOVERY LOG
 =============
@@ -47,7 +51,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 
-_GRID = (4096, 8192, 16384, 32768)
+_GRID = (256, 512, 1024, 2048, 4096, 8192, 16384)
 
 
 def derive_k_constants(k: int,
@@ -55,26 +59,32 @@ def derive_k_constants(k: int,
                         ceiling: int = 256) -> dict:
     """Compute the pipeline constants both encoders share.
 
+    Recipe:
+      D  →  k = round(√D)
+      max_slots      = round(2·√k)      — historically-validated
+                                          binding-table size. At
+                                          k=16→8, k=23→10, k=45→13,
+                                          k=128→23. Provides headroom
+                                          for short-narrative regimes
+                                          where p99 sits between √k
+                                          and 2·√k; p99 lift handles
+                                          the tail beyond that.
+      salient_tokens = k // 2           — IDF budget for
+                                          worker_encode.py salience pool
+
     Two formulas feed ``max_slots``:
 
-      - ``base = round(2·√k)`` — k-coupled floor. At k=64 → 16,
-        k=128 → 23, k=181 → 27. Keeps role-table size sane on short
-        corpora (SRO, tagged keywords).
-      - ``lift = p99_atoms`` — when the corpus has long records, the
-        slot cap lifts to the 99th-percentile token count so slot
-        binding actually covers the typical long record. At EDGE
-        (p99=65, k=64), max_slots jumps 16 → 65; previously the last
-        75% of each record's tokens never reached slot/bigram binding.
+      - ``base = round(2·√k)`` — k-coupled floor.
+      - ``lift = p99_atoms`` — safety net for outlier corpora whose
+        99th-percentile token count exceeds the base. At EDGE
+        (k=64, p99=65), max_slots lifts 2·√64=16 → 65 so the typical
+        long record's tail still reaches slot/bigram binding.
 
     Final: ``max_slots = min(max(base, lift), ceiling)``. Ceiling (256
     by default) bounds encode-time on outlier corpora with pathological
     record lengths — O(max_slots) work in two of the three binding
     loops, so we cap it here rather than let a rogue 10k-token record
     blow up ingest.
-
-    ``salient_tokens = round(√k)`` — legacy IDF budget used only by
-    ``worker_encode.py``. Computed + logged here so corpus_profile.json
-    is internally consistent across encoder paths.
 
     All outputs have a floor of 1. Pass ``p99_atoms=None`` to get
     the k-only formula (used on the ``--no-autotune`` path where p99
@@ -86,7 +96,7 @@ def derive_k_constants(k: int,
         base = max(base, int(p99_atoms))
     return {
         "max_slots":      min(max(1, base), int(ceiling)),
-        "salient_tokens": max(1, int(round(sqrt_k))),
+        "salient_tokens": max(1, int(k) // 2),
     }
 
 
@@ -98,29 +108,30 @@ def predict_d_zone(p99_atoms: int,
 
     Empirical calibration note: the textbook BSC capacity formula
     (k ≥ atoms², D ≥ k²) over-predicts the D required for
-    StructuralPipelineV13's role+bigram+KV+Hebbian binding. On the edge
-    corpus (p99 atoms = 65) the formula predicts D ≥ 17000 but real
-    retrieval wins at D=4096. So **for any narrative regime we always
-    include D=4096 as a safety floor**, regardless of operator-queries
-    flag. Only for genuinely deep corpora (p99 > 200) do we skip 4096.
+    StructuralPipelineV13's role+bigram+KV+Hebbian binding because it
+    assumes role-bound HRR with unbinding-style recovery. We do
+    exact-match retrieval on superposed atoms — no unbinding — so
+    Plate's bound doesn't apply. On the edge corpus (p99 atoms = 65)
+    the formula predicts D ≥ 17000 but real retrieval wins at D=4096;
+    on Wikidata-21.3M (p99=2) it works perfectly at D=512.
 
     `has_operator_queries` shifts the *upper* end: with operator scoring
-    we can trust dropping D=32768 for short narrative, where without
+    we can trust dropping the largest D in the zone, where without
     operator queries we'd keep it as a safety candidate.
     """
     if p99_atoms <= 8:
-        return [4096, 8192], "atomic SRO regime"
+        return [256, 512, 1024], "atomic SRO regime"
     if p99_atoms <= 24:
         if has_operator_queries:
-            return [4096, 8192, 16384], "short narrative regime (operator-scored)"
-        return [4096, 8192, 16384, 32768], "short narrative regime (synthetic-mode wide)"
+            return [512, 1024, 2048], "short narrative regime (operator-scored)"
+        return [512, 1024, 2048, 4096], "short narrative regime (synthetic-mode wide)"
     if p99_atoms <= 200:
         # Long narrative: empirical evidence (edge corpus, p99=65, D=4096
         # winner at 44% Hit@1) requires keeping D=4096 in the zone.
-        return [4096, 8192, 16384, 32768], "long narrative regime (full sweep — formula over-predicts)"
+        return [1024, 2048, 4096, 8192], "long narrative regime (full sweep — formula over-predicts)"
     if has_operator_queries:
-        return [8192, 16384, 32768], "deep regime (operator-scored)"
-    return [4096, 8192, 16384, 32768], "deep regime (synthetic-mode wide)"
+        return [4096, 8192, 16384], "deep regime (operator-scored)"
+    return [2048, 4096, 8192, 16384], "deep regime (synthetic-mode wide)"
 
 
 def load_operator_queries(path) -> List[dict]:
@@ -344,7 +355,7 @@ def append_discovery(*,
         section.append(
             f"- **Derived constants** (k={winner['k']}, p99={p99_atoms}): "
             f"max_slots={ms}  ({reason})  •  "
-            f"salient_tokens={st}  (=√k)\n")
+            f"salient_tokens={st}  (=k/2)\n")
 
     # Breadcrumb: delta vs prior winner if we have one
     if prior:

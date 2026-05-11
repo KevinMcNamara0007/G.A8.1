@@ -126,8 +126,10 @@ class StructuralEncoder(Encoder):
     """C — v13 structural pipeline (slot + bigram + KV + optional Hebbian)."""
     def __init__(self, dim=4096, k=64, enable_hebbian=True, label="C_structural_v13"):
         self.name = label
+        from encode._autotune import derive_k_constants
         cfg = ehc.StructuralConfig()
-        cfg.dim = dim; cfg.k = k; cfg.max_slots = 24
+        cfg.dim = dim; cfg.k = k
+        cfg.max_slots = derive_k_constants(int(k))["max_slots"]
         cfg.enable_bigram = True
         cfg.enable_kv = True
         cfg.enable_hebbian = bool(enable_hebbian)

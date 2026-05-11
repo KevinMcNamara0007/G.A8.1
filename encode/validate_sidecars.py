@@ -39,25 +39,10 @@ def validate_shard(shard_dir: Path) -> dict:
     meta_dir = shard_dir / "meta"
     ehs_path = shard_dir / "sidecar.ehs"
 
-    with (meta_dir / "texts.json").open() as f:        texts = json.load(f)
-    with (meta_dir / "authors.json").open() as f:      authors = json.load(f)
-    with (meta_dir / "tags.json").open() as f:         tags_raw = json.load(f)
-    with (meta_dir / "channels.json").open() as f:     channels = json.load(f)
-    with (meta_dir / "timestamps.json").open() as f:   timestamps = json.load(f)
-    with (meta_dir / "media_paths.json").open() as f:  media_paths = json.load(f)
-    with (meta_dir / "urls.json").open() as f:         urls = json.load(f)
-    with (meta_dir / "values.json").open() as f:       values = json.load(f)
-
-    tags = [json.loads(t) if t else [] for t in tags_raw]
-    ts_ms = [iso_to_ms(t) for t in timestamps]
-
     store = ehc.SidecarStore.open(str(ehs_path))
     if store is None:
         raise RuntimeError(f"SidecarStore.open returned None for {ehs_path}")
-
     n = store.n_vectors()
-    if n != len(texts):
-        raise RuntimeError(f"{shard_dir.name}: n_vectors {n} != {len(texts)}")
 
     mismatches = 0
     first_mismatch: str | None = None
@@ -69,16 +54,31 @@ def validate_shard(shard_dir: Path) -> dict:
             first_mismatch = (f"{shard_dir.name}:{i} {field} "
                               f"want={want!r} got={got!r}")
 
-    for i in range(n):
-        if store.text(i) != texts[i]:           fail("text", i, texts[i], store.text(i))
-        if store.author(i) != authors[i]:       fail("author", i, authors[i], store.author(i))
-        if store.channel(i) != channels[i]:     fail("channel", i, channels[i], store.channel(i))
-        if store.url(i) != urls[i]:             fail("url", i, urls[i], store.url(i))
-        if store.media_path(i) != media_paths[i]:
-            fail("media_path", i, media_paths[i], store.media_path(i))
-        if store.value(i) != values[i]:         fail("value", i, values[i], store.value(i))
-        if store.tags(i) != tags[i]:            fail("tags", i, tags[i], store.tags(i))
-        if store.timestamp(i) != ts_ms[i]:      fail("timestamp", i, ts_ms[i], store.timestamp(i))
+    # Validate one JSON column at a time so peak per-shard memory is
+    # one column instead of all eight simultaneously.
+    columns = [
+        ("text",       "texts.json",       store.text,       lambda v: v),
+        ("author",     "authors.json",     store.author,     lambda v: v),
+        ("channel",    "channels.json",    store.channel,    lambda v: v),
+        ("url",        "urls.json",        store.url,        lambda v: v),
+        ("media_path", "media_paths.json", store.media_path, lambda v: v),
+        ("value",      "values.json",      store.value,      lambda v: v),
+        ("tags",       "tags.json",        store.tags,       lambda v: json.loads(v) if v else []),
+        ("timestamp",  "timestamps.json",  store.timestamp,  iso_to_ms),
+    ]
+
+    for field, fname, getter, transform in columns:
+        with (meta_dir / fname).open() as f:
+            col = json.load(f)
+        # Length check on the first column doubles as the n_vectors check.
+        if field == "text" and n != len(col):
+            raise RuntimeError(f"{shard_dir.name}: n_vectors {n} != {len(col)}")
+        for i in range(n):
+            want = transform(col[i])
+            got = getter(i)
+            if got != want:
+                fail(field, i, want, got)
+        del col
 
     return {
         "shard": shard_dir.name,

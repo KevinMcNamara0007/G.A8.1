@@ -301,3 +301,41 @@ character. Implementation in `encode/_io.py::iter_json_records`.
 
 ---
 
+## WIKI
+- **Date**: 2026-05-07T14:53:40+00:00
+- **Encoder**: `encode_triples`
+- **Source**: `/Users/stark/Quantum_Computing_Lab/GoldC/triples_21M.json`
+- **Records**: 379,540
+- **p99 atoms/record**: 2
+- **Predicted zone**: [2048, 4096]  (atomic SRO regime)
+- **Swept zone**: [2048, 4096]
+- **Sweep results**:
+  | D | k | Hit@1 | p50 ms |
+  |---:|---:|---:|---:|
+  | 2048 | 45 | 100.00% | 2.52 | ← winner
+  | 4096 | 64 | 100.00% | 3.02 |
+- **Winner**: D=2048, k=45, Hit@1=100.00%, p50=2.52 ms
+- **Derived constants** (k=45, p99=2): max_slots=45  (=k)  •  salient_tokens=22  (=k/2)
+- **vs prior** (2026-04-24T13:55:20+00:00): prior winner D=4096/k=64 Hit@1=100.00% p50=7.38ms  →  this run: ΔHit@1=+0.00pp  Δp50=-4.86ms  (D shifted 4096→2048)
+
+---
+
+## WIKI
+- **Date**: 2026-05-07T15:42:12+00:00
+- **Encoder**: `encode_triples`
+- **Source**: `/Users/stark/Quantum_Computing_Lab/GoldC/triples_21M.json`
+- **Records**: 1,000,000
+- **p99 atoms/record**: 2
+- **Predicted zone**: [2048, 4096]  (atomic SRO regime)
+- **Swept zone**: [2048, 4096]
+- **Sweep results**:
+  | D | k | Hit@1 | p50 ms |
+  |---:|---:|---:|---:|
+  | 2048 | 45 | 100.00% | 6.60 | ← winner
+  | 4096 | 64 | 100.00% | 11.23 |
+- **Winner**: D=2048, k=45, Hit@1=100.00%, p50=6.60 ms
+- **Derived constants** (k=45, p99=2): max_slots=13  (=2·√k)  •  salient_tokens=22  (=k/2)
+- **vs prior** (2026-05-07T14:53:40+00:00): prior winner D=2048/k=45 Hit@1=100.00% p50=2.52ms  →  this run: ΔHit@1=+0.00pp  Δp50=+4.08ms  (same geometry)
+
+---
+
