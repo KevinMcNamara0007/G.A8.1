@@ -262,7 +262,7 @@ the geometry separately. Enforced in code:
 |---|---|
 | **D grid `{256, 512, 1024, 2048, 4096, 8192, 16384}`** | `encode/_autotune.py:_GRID`, `decode13/profile/elbow.py:GRID_POWER_OF_TWO` |
 | **`k = round(√D)`** | `encode_triples.py:autotune_dk`, `encode_unstructured.py:autotune_dk` |
-| **`max_slots = round(2·√k)`** + p99 lift | `_autotune.derive_k_constants` (used by encode_triples + encode_unstructured + decode `build_sro_tier1_config`) |
+| **`max_slots = round(2·√k)`** (universal law — no corpus terms) | `_autotune.derive_k_constants` (used by encode_triples + encode_unstructured + decode `build_sro_tier1_config`). The historical "+ p99 lift" patch was removed 2026-05-12 after the EDGE max_slots sweep (`MOE/EDGE/_sweep/sweep_results.json`) showed the lift hurt Hit@1 by 4 pp at 3 of 4 swept D values; the law value won or tied at every D. Opt back in per-corpus with `lift_for_p99=True`. |
 | **`max_salient_tokens = k // 2`** | `_autotune.derive_k_constants` (used by encode_triples + worker_encode) |
 | **Atomic-SRO autotune zone `{256, 512, 1024}`** for p99 ≤ 8 | `_autotune.predict_d_zone` |
 | **Path-B-symmetric Tier-1** | `decode13/structured_pipeline.py:tokens_from_triple` returns `[s, r]`; `worker_encode.py:572` calls `tokens_from_triple()` |

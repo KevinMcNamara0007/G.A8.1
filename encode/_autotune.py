@@ -56,43 +56,65 @@ _GRID = (256, 512, 1024, 2048, 4096, 8192, 16384)
 
 def derive_k_constants(k: int,
                         p99_atoms: Optional[int] = None,
-                        ceiling: int = 256) -> dict:
+                        ceiling: int = 256,
+                        lift_for_p99: bool = False) -> dict:
     """Compute the pipeline constants both encoders share.
 
-    Recipe:
-      D  →  k = round(√D)
-      max_slots      = round(2·√k)      — historically-validated
-                                          binding-table size. At
-                                          k=16→8, k=23→10, k=45→13,
-                                          k=128→23. Provides headroom
-                                          for short-narrative regimes
-                                          where p99 sits between √k
-                                          and 2·√k; p99 lift handles
-                                          the tail beyond that.
-      salient_tokens = k // 2           — IDF budget for
-                                          worker_encode.py salience pool
+    UNIVERSAL LAW (the default, as of 2026-05-12)
+    =============================================
+        D                →  k              = round(√D)
+        max_slots         =  round(2·√k)     capped at `ceiling`
+        salient_tokens    =  k // 2
 
-    Two formulas feed ``max_slots``:
+    No corpus-dependent terms. The triple `(k, max_slots, salient_tokens)`
+    is determined entirely by D.
 
-      - ``base = round(2·√k)`` — k-coupled floor.
-      - ``lift = p99_atoms`` — safety net for outlier corpora whose
-        99th-percentile token count exceeds the base. At EDGE
-        (k=64, p99=65), max_slots lifts 2·√64=16 → 65 so the typical
-        long record's tail still reaches slot/bigram binding.
+    At canonical k values:
+        k= 16 →  max_slots=  8  salient=  8
+        k= 23 →  max_slots= 10  salient= 11
+        k= 32 →  max_slots= 11  salient= 16
+        k= 45 →  max_slots= 13  salient= 22
+        k= 64 →  max_slots= 16  salient= 32
+        k= 91 →  max_slots= 19  salient= 45
+        k=128 →  max_slots= 23  salient= 64
 
-    Final: ``max_slots = min(max(base, lift), ceiling)``. Ceiling (256
-    by default) bounds encode-time on outlier corpora with pathological
-    record lengths — O(max_slots) work in two of the three binding
-    loops, so we cap it here rather than let a rogue 10k-token record
-    blow up ingest.
+    WHY NO P99 LIFT BY DEFAULT
+    ==========================
+    Earlier versions added a "p99 lift": when p99_atoms exceeded 2·√k,
+    max_slots was raised to p99 on the theory that long-tail records
+    needed extra binding-table headroom. The May 2026 EDGE D-sweep
+    (`MOE/EDGE/_sweep/sweep_results.json`) refuted this empirically:
+    across D ∈ {1024, 2048, 4096, 8192} on a narrative corpus with
+    p99=65, the law value `2·√k ∈ {11, 13, 16, 19}` matched or beat
+    the lifted value `max(2·√k, 65)` on Hit@1 at every D — and beat
+    it by 4 pp at three of the four. The Plate-superposition-capacity
+    intuition explains it: every extra slot binding adds active bits
+    to the superposed final vector; at fixed D, more contributions =
+    more support saturation = less discriminative cosines. Our
+    retrieval is cosine-on-superposition (no unbinding), so the
+    "headroom" theory wasn't load-bearing for the right capacity
+    bound.
 
-    All outputs have a floor of 1. Pass ``p99_atoms=None`` to get
-    the k-only formula (used on the ``--no-autotune`` path where p99
-    may not be measured)."""
+    OPT-IN ESCAPE HATCH
+    ===================
+    Pass `lift_for_p99=True` to restore the old behavior for a
+    specific corpus. The `p99_atoms` arg is still accepted (and
+    recorded in discovery logs) regardless — it just doesn't change
+    `max_slots` unless the lift flag is set.
+
+    CEILING
+    =======
+    `ceiling` (default 256) bounds encode-time on pathological inputs
+    even when the lift is on. O(max_slots) work in two of the three
+    binding loops, so we cap it here rather than let a rogue 10k-token
+    record blow up ingest.
+
+    All outputs have a floor of 1.
+    """
     import math
     sqrt_k = max(1.0, math.sqrt(max(int(k), 1)))
     base = int(round(2.0 * sqrt_k))
-    if p99_atoms is not None:
+    if lift_for_p99 and p99_atoms is not None:
         base = max(base, int(p99_atoms))
     return {
         "max_slots":      min(max(1, base), int(ceiling)),

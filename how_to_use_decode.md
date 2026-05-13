@@ -693,7 +693,7 @@ contract:
 | Property | flat (`encode_triples`) | sharded (`encode.py`) |
 |---|---|---|
 | **`k = √D`** | ✓ `_autotune.predict_d_zone` + `autotune_dk` | ✓ same |
-| **`max_slots = round(2·√k)`** | ✓ via `build_sro_tier1_config` → `derive_k_constants` | **N/A** — sharded path uses pure `ehc.superpose`; no slot table exists |
+| **`max_slots = round(2·√k)`** (universal law) | ✓ via `build_sro_tier1_config` → `derive_k_constants`. The historical "+ p99 lift" was removed 2026-05-12; opt-in per corpus via `lift_for_p99=True`. | **N/A** — sharded path uses pure `ehc.superpose`; no slot table exists |
 | **`max_salient_tokens = k // 2`** | N/A — flat path doesn't use salience | ✓ `worker_encode.py` calls `derive_k_constants` per-encode |
 | **D grid `{256…16384}`** | ✓ `_autotune._GRID`, `decode13/profile/elbow.py:GRID_POWER_OF_TWO` | ✓ same |
 | **Path-B-symmetric Tier-1** | ✓ `sro_tier1_encode_text(s, r)` = `f"{s} {r}"` | ✓ `structured_pipeline.tokens_from_triple` returns `[s, r]`; `worker_encode.py:572` calls it instead of hardcoding `(s, r, o)` |
