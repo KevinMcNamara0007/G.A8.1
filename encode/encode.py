@@ -569,21 +569,42 @@ def _flush_shard(path, buffer):
 
 
 def _assert_encoding_mode_set():
-    """BUG-DATA-01 — refuse to run when neither tier-routed nor
-    closed-loop is selected.
+    """BUG-DATA-01 — refuse to run without `A81_TIER_ROUTED=1`.
 
-    `encode.py` without `A81_TIER_ROUTED=1` (or `A81_CLOSED_LOOP=1`)
-    used to produce shards with no `tier_manifest.json` *and* no
-    closed-loop fixups, after which decode13.benchmark.run_production
-    reported 0% Hit@1 in both modes with no warning — the only tell
-    was `tier_counts={'structured_atomic': 0, ...}` deep in decode
-    startup logs.
+    Per `how_to_use_encode.md` Gotcha #1 + Use Case 3, the sharded
+    encoder *requires* `A81_TIER_ROUTED=1`. Without it, vectors are
+    written without per-shard `tier_manifest.json`; the canonical
+    `decode.QueryService` (and its sharded backend
+    `decode13.QueryServiceV13`) then reports
+    `tier_counts={'structured_atomic': 0, …}` at startup and recall
+    collapses to ~0% because the tier filter rejects every candidate.
 
-    This guard fails loudly at the start of `run_encode` (the only
-    Python entry point that has this footgun — `encode_triples.py` is
-    the canonical SRO path and doesn't need either flag). Pure
-    process-startup check; no per-record cost, no allocations
-    retained past return.
+    `A81_CLOSED_LOOP=1` is an *orthogonal* canonicalization flag (it
+    enables the closed-loop normalization pipeline) — it does NOT
+    write tier manifests and therefore is not, on its own, sufficient
+    to produce a sharded corpus the canonical decode path can query.
+    Combining `A81_TIER_ROUTED=1` with `A81_CLOSED_LOOP=1` is fine
+    (both apply, independently).
+
+    Earlier this guard accepted either flag. That was a hole in the
+    original BUG-DATA-01 fix — flagged when our re-encoded MOE/WIKI
+    showed tier_counts=0 in the benchmark log even though
+    `A81_CLOSED_LOOP=1` was set. This version follows the encode doc.
+
+    Three escape hatches:
+      A81_ALLOW_UNBENCHMARKABLE=1 — legacy umbrella opt-out (kept for
+                                    back-compat with the prior guard).
+      A81_ALLOW_TIER_AGNOSTIC=1   — newer, more specific opt-out for
+                                    tooling that explicitly wants a
+                                    tier-agnostic baseline arm (e.g.
+                                    `decode13.benchmark.run_production`'s
+                                    `--base-dir`). Warns loudly.
+
+    Pure process-startup check; no per-record cost, no allocations
+    retained past return. Only fires inside the sharded entry point
+    (`encode.py::run_encode`) — `encode_triples.py` and
+    `encode_unstructured.py` produce the flat layout and do not call
+    this guard.
     """
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     try:
@@ -593,29 +614,54 @@ def _assert_encoding_mode_set():
         # downstream import errors carry the failure.
         return
     tier_routed = bool(getattr(_c, "TIER_ROUTED_ENABLED", False))
-    closed_loop = bool(getattr(_c, "CLOSED_LOOP_ENABLED", False))
-    if tier_routed or closed_loop:
+    if tier_routed:
         return
-    # Honor an explicit opt-out flag if a caller really wants the
-    # legacy "produce whatever falls out" behavior (e.g. tooling that
-    # only needs the centroids + sidecars and never touches Hit@k).
+    # Tier-agnostic opt-out (specific). Used by run_production.py's
+    # baseline arm where we genuinely want the tier filter disabled.
+    if os.environ.get("A81_ALLOW_TIER_AGNOSTIC", "").lower() in (
+            "1", "true", "yes", "on"):
+        print("  [encode] WARNING: A81_ALLOW_TIER_AGNOSTIC=1 — shards "
+              "will lack tier_manifest.json; the canonical decode path "
+              "(`from decode import QueryService`) will treat every "
+              "candidate as tier-agnostic (weight 1.0). Only use this "
+              "for a head-to-head baseline arm; for production "
+              "encodes set A81_TIER_ROUTED=1.", file=sys.stderr, flush=True)
+        return
+    # Legacy umbrella opt-out (kept for back-compat with the prior guard).
     if os.environ.get("A81_ALLOW_UNBENCHMARKABLE", "").lower() in (
             "1", "true", "yes", "on"):
-        print("  [encode] WARNING: A81_ALLOW_UNBENCHMARKABLE set — "
-              "shards will lack tier_manifest.json and closed-loop "
-              "fixups; decode13.benchmark.run_production will report "
-              "0% Hit@k against them.", file=sys.stderr, flush=True)
+        print("  [encode] WARNING: A81_ALLOW_UNBENCHMARKABLE=1 — shards "
+              "will lack tier_manifest.json; the canonical decode path "
+              "will report ~0% Hit@k against them (per "
+              "how_to_use_encode.md Gotcha #1).",
+              file=sys.stderr, flush=True)
         return
+    closed_loop = bool(getattr(_c, "CLOSED_LOOP_ENABLED", False))
+    detail = ""
+    if closed_loop:
+        detail = ("  Detected A81_CLOSED_LOOP=1 — closed-loop is an "
+                  "orthogonal canonicalization flag and does NOT write\n"
+                  "  tier manifests. Set A81_TIER_ROUTED=1 in addition "
+                  "(both can apply together) or use one of the opt-outs\n"
+                  "  below if you genuinely want a tier-agnostic "
+                  "baseline arm.\n")
     print(
-        "\n[encode] ABORT — no encoding mode selected.\n"
-        "  Running encode.py with neither A81_TIER_ROUTED=1 nor "
-        "A81_CLOSED_LOOP=1 produces shards that no benchmark mode can "
-        "use (silent 0% Hit@k, BUG-DATA-01).\n"
-        "  Pick one of:\n"
-        "    A81_TIER_ROUTED=1   — tier-routed v13 (PlanB) shards\n"
-        "    A81_CLOSED_LOOP=1   — baseline closed-loop shards\n"
-        "  Or use encode_triples.py for SRO data (no env vars needed).\n"
-        "  To override (legacy tooling only):\n"
+        "\n[encode] ABORT — A81_TIER_ROUTED=1 is required for the "
+        "sharded encoder.\n"
+        "  Without it, shards lack tier_manifest.json and the "
+        "canonical decode path (`from decode import QueryService`)\n"
+        "  reports ~0% Hit@k because every candidate is filtered out "
+        "(see how_to_use_encode.md Gotcha #1, BUG-DATA-01).\n"
+        + detail +
+        "  Fix:\n"
+        "    A81_TIER_ROUTED=1   — tier-routed v13 (PlanB) shards "
+        "(canonical)\n"
+        "  For a flat-layout corpus (single-machine ≤ ~100M records) "
+        "use encode_triples.py or encode_unstructured.py — neither\n"
+        "  requires env vars.\n"
+        "  Tier-agnostic baseline arm only (warns loudly):\n"
+        "    A81_ALLOW_TIER_AGNOSTIC=1\n"
+        "  Legacy umbrella opt-out (back-compat):\n"
         "    A81_ALLOW_UNBENCHMARKABLE=1\n",
         file=sys.stderr, flush=True)
     sys.exit(6)

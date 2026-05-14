@@ -339,3 +339,24 @@ character. Implementation in `encode/_io.py::iter_json_records`.
 
 ---
 
+## EDGE
+- **Date**: 2026-05-13T18:46:21+00:00
+- **Encoder**: `encode_unstructured`
+- **Source**: `/Users/stark/Quantum_Computing_Lab/MOE/EDGE/source_corpus.jsonl`
+- **Records**: 220,025
+- **p99 atoms/record**: 65
+- **Predicted zone**: [1024, 2048, 4096, 8192]  (long narrative regime (full sweep — formula over-predicts))
+- **Swept zone**: [1024, 2048, 4096, 8192]
+- **Sweep results**:
+  | D | k | Hit@1 | p50 ms |
+  |---:|---:|---:|---:|
+  | 1024 | 32 | 16.00% | 0.46 |
+  | 2048 | 45 | 12.00% | 0.54 |
+  | 4096 | 64 | 16.00% | 0.83 |
+  | 8192 | 91 | 20.00% | 0.97 | ← winner
+- **Winner**: D=8192, k=91, Hit@1=20.00%, p50=0.97 ms
+- **Derived constants** (k=91, p99=65): max_slots=19  (=2·√k)  •  salient_tokens=45  (=k/2)
+- **vs prior** (2026-04-24T13:56:33+00:00): prior winner D=4096/k=64 Hit@1=52.00% p50=0.99ms  →  this run: ΔHit@1=-32.00pp  Δp50=-0.02ms  (D shifted 4096→8192)
+
+---
+
