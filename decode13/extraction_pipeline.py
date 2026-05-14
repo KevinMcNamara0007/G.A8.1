@@ -168,26 +168,57 @@ class ExtractionPipeline:
 def _make_primary(name: Optional[str] = None):
     """Factory: build the encode-side primary extractor.
 
-    decode13 deliberately has no LLM-based extractors (no T5, no BART,
-    no REBEL). Tier 2 does its extraction work with native EHC VSA
-    primitives — tokenize → stem → role-bind → superpose — which gives
-    us contract symmetry between encode and decode by construction, zero
-    external-model dependencies, and ~1000× less memory than a transformer.
+    Tier 2's primary extractor identifies subject + relation atoms from
+    sentences. Two implementations are supported:
+
+      "rule_based"  →  RuleBasedFactSeparator (regex templates over
+                       "X is Y" and "X of Y is Z" patterns). Native-EHC,
+                       no external deps. Good for Wikidata-shape text;
+                       weak on narrative.
+
+      "spacy_ner_gazetteer"  →  SpacyNERGazetteerExtractor (spaCy NER for
+                       subjects + curated relation gazetteer for relations).
+                       Requires spaCy + en_core_web_sm (or other model)
+                       installed, and a per-corpus gazetteer JSON. Empirically
+                       lifted Tier-2 share on EDGE narrative from 19% (rule_based)
+                       to 91%; see MOE/EDGE/_bench/tier2_extraction_probe_v2.py.
+
+                       Env vars consumed:
+                         A81_TIER_GAZETTEER_PATH  — path to gazetteer JSON (required)
+                         A81_TIER_SPACY_MODEL     — spaCy model name (default "en_core_web_sm")
 
     Selection order:
       1. explicit `name` argument
       2. A81_TIER_EXTRACTOR env var
       3. default → "rule_based"
 
-    The only supported name is "rule_based" (RuleBasedFactSeparator,
-    regex templates). Unknown labels fall back to rule_based with a
-    warning so older config files don't crash benchmarks.
+    Unknown labels fall back to rule_based with a warning so older
+    config files don't crash benchmarks.
     """
-    import os
+    import os, sys
     chosen = (name or os.environ.get("A81_TIER_EXTRACTOR", "rule_based")).strip()
+
+    if chosen == "spacy_ner_gazetteer":
+        gaz_path = os.environ.get("A81_TIER_GAZETTEER_PATH", "").strip()
+        if not gaz_path:
+            print(f"[ExtractionPipeline] extractor 'spacy_ner_gazetteer' "
+                  f"requires A81_TIER_GAZETTEER_PATH; falling back to "
+                  f"rule_based.", file=sys.stderr)
+            return RuleBasedFactSeparator()
+        model = os.environ.get("A81_TIER_SPACY_MODEL", "en_core_web_sm").strip()
+        try:
+            from .extractors_ner_gazetteer import SpacyNERGazetteerExtractor
+            return SpacyNERGazetteerExtractor(
+                spacy_model=model,
+                gazetteer_path=gaz_path,
+            )
+        except Exception as e:
+            print(f"[ExtractionPipeline] spacy_ner_gazetteer construction "
+                  f"failed ({e}); falling back to rule_based.",
+                  file=sys.stderr)
+            return RuleBasedFactSeparator()
+
     if chosen and chosen != "rule_based":
-        import sys
-        print(f"[ExtractionPipeline] extractor {chosen!r} is not supported "
-              f"(native-EHC-only). Falling back to rule_based.",
-              file=sys.stderr)
+        print(f"[ExtractionPipeline] extractor {chosen!r} is not supported. "
+              f"Falling back to rule_based.", file=sys.stderr)
     return RuleBasedFactSeparator()
