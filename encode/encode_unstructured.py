@@ -119,6 +119,20 @@ def parse_args():
     p.add_argument("--no-hebbian", action="store_true",
                    help="Disable Hebbian co-occurrence layer. Default ON for "
                         "narrative corpora; turn OFF for single-exposure data.")
+    p.add_argument("--lift-for-p99", action="store_true",
+                   help="Per-corpus opt-in: derive max_slots as "
+                        "max(round(2·√k), p99_atoms) instead of the universal "
+                        "law default round(2·√k). Documented escape hatch in "
+                        "_autotune.derive_k_constants.")
+    p.add_argument("--ensemble-seeds", default=None,
+                   help="Comma-separated codebook seeds for ensemble encoding "
+                        "(e.g. '42,56,64,96,104,116'). Encodes one pipeline "
+                        "per seed under structural_v13_seedN/, shares "
+                        "corpus.jsonl, writes ensemble.json. The decoder "
+                        "auto-detects ensemble.json and fans queries across "
+                        "all seeds, fusing via merge_top10. Spread seeds (not "
+                        "consecutive) for the best Hit@1 lift — codebook "
+                        "rotation diversity is what helps.")
     p.add_argument("--operator-queries", default=None,
                    help="JSONL of {query_text, gold_ids: [doc_id]} entries. "
                         "When supplied, autotune scores against THESE real "
@@ -340,7 +354,8 @@ def autotune_dk(source: Path, output: Path, grid: List[int],
 
 
 def encode_full(source: Path, output: Path, dim: int, k: int,
-                p99_atoms: Optional[int], workers: int, hebbian: bool):
+                p99_atoms: Optional[int], workers: int, hebbian: bool,
+                lift_for_p99: bool = False):
     """Stream input → encode + write sidecar concurrently.
 
     Memory discipline: corpus.jsonl is opened for write at start; each
@@ -352,7 +367,8 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
     pipe_dir.mkdir(parents=True, exist_ok=True)
 
     from ._autotune import derive_k_constants
-    consts = derive_k_constants(k, p99_atoms=p99_atoms)
+    consts = derive_k_constants(k, p99_atoms=p99_atoms,
+                                 lift_for_p99=lift_for_p99)
     cfg_ = build_structural_config(
         dim=dim, k=k, max_slots=consts["max_slots"],
         enable_bigram=True, enable_kv=True,
@@ -360,10 +376,11 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
     )
     pipe = ehc.StructuralPipelineV13(cfg_)
     p99_tag = f"p99={p99_atoms}" if p99_atoms is not None else "p99=(unscanned)"
+    lift_tag = " lift_for_p99=ON" if lift_for_p99 else ""
     print(f"[encode] D={dim}  k={k}  {p99_tag}  "
           f"max_slots={consts['max_slots']}  "
           f"salient_tokens={consts['salient_tokens']}  "
-          f"workers={workers}  hebbian={hebbian}", flush=True)
+          f"workers={workers}  hebbian={hebbian}{lift_tag}", flush=True)
 
     cpath = output / "corpus.jsonl"
     t0 = time.perf_counter()
@@ -398,6 +415,104 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
     pipe.save(str(pipe_dir))
     print(f"[encode] saved pipeline → {pipe_dir}", flush=True)
     print(f"[encode] wrote sidecar → {cpath} ({n:,} rows)", flush=True)
+    return n
+
+
+def encode_ensemble(source: Path, output: Path, dim: int, k: int,
+                     p99_atoms: Optional[int], workers: int, hebbian: bool,
+                     lift_for_p99: bool, seeds: List[int]):
+    """Ensemble encode: one source pass → N seeded pipelines + shared sidecar.
+
+    Output layout:
+        <output>/ensemble.json
+        <output>/corpus.jsonl
+        <output>/structural_v13_seed{N}/
+            structural_v13.cfg, lsh.bin, hebbian.bin
+        ...
+
+    Each batch is ingested into all N pipes; codebook seeds differ, so the
+    encoded vectors are independent rotations of the same source.
+    """
+    output.mkdir(parents=True, exist_ok=True)
+    from ._autotune import derive_k_constants
+    consts = derive_k_constants(k, p99_atoms=p99_atoms,
+                                 lift_for_p99=lift_for_p99)
+
+    pipes = []
+    pipe_dirs = []
+    for s in seeds:
+        pdir = output / f"structural_v13_seed{s}"
+        pdir.mkdir(parents=True, exist_ok=True)
+        cfg_ = build_structural_config(
+            dim=dim, k=k, max_slots=consts["max_slots"],
+            codebook_seed=int(s),
+            enable_bigram=True, enable_kv=True,
+            enable_hebbian=hebbian, hebbian_window=5,
+        )
+        pipes.append(ehc.StructuralPipelineV13(cfg_))
+        pipe_dirs.append(pdir)
+
+    lift_tag = " lift_for_p99=ON" if lift_for_p99 else ""
+    p99_tag = f"p99={p99_atoms}" if p99_atoms is not None else "p99=(unscanned)"
+    print(f"[encode-ensemble] seeds={seeds}  D={dim}  k={k}  {p99_tag}  "
+          f"max_slots={consts['max_slots']}  "
+          f"salient_tokens={consts['salient_tokens']}  "
+          f"workers={workers}  hebbian={hebbian}{lift_tag}", flush=True)
+
+    cpath = output / "corpus.jsonl"
+    t0 = time.perf_counter()
+    BATCH = 1_000
+    tx, ix = [], []
+    n = 0
+    with open(cpath, "w", encoding="utf-8") as sidecar_f:
+        for text, raw_rec in _stream_records(source):
+            doc_id = int(raw_rec.get("doc_id", n))
+            tx.append(text); ix.append(doc_id)
+            out_rec = {"doc_id": doc_id, "text": text,
+                       **{k_: v for k_, v in raw_rec.items()
+                          if k_ not in ("doc_id", "text")}}
+            sidecar_f.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
+            n += 1
+            if len(tx) >= BATCH:
+                for pipe in pipes:
+                    pipe.ingest_batch_parallel(tx, ix, workers)
+                tx.clear(); ix.clear()
+                if n % 100_000 == 0:
+                    el = time.perf_counter() - t0
+                    print(f"[encode-ensemble]   ingested {n:,} into "
+                          f"{len(pipes)} pipes in {el:.1f}s "
+                          f"({n/el:,.0f}/s per pipe)", flush=True)
+        if tx:
+            for pipe in pipes:
+                pipe.ingest_batch_parallel(tx, ix, workers)
+
+    el = time.perf_counter() - t0
+    print(f"[encode-ensemble] ingest done: {n:,} records × {len(pipes)} "
+          f"pipes in {el:.1f}s", flush=True)
+
+    for pipe, pdir in zip(pipes, pipe_dirs):
+        pipe.save(str(pdir))
+    print(f"[encode-ensemble] saved {len(pipes)} pipelines under {output}/",
+          flush=True)
+    print(f"[encode-ensemble] wrote sidecar → {cpath} ({n:,} rows)", flush=True)
+
+    manifest = {
+        "version": 1,
+        "encoder": "encode_unstructured",
+        "seeds": [int(s) for s in seeds],
+        "dim": int(dim),
+        "k": int(k),
+        "max_slots": int(consts["max_slots"]),
+        "salient_tokens": int(consts["salient_tokens"]),
+        "p99_atoms": (None if p99_atoms is None else int(p99_atoms)),
+        "lift_for_p99": bool(lift_for_p99),
+        "hebbian": bool(hebbian),
+        "fusion": "merge_top10",
+        "n_records": int(n),
+    }
+    with open(output / "ensemble.json", "w") as mf:
+        json.dump(manifest, mf, indent=2)
+    print(f"[encode-ensemble] wrote {output}/ensemble.json", flush=True)
     return n
 
 
@@ -444,7 +559,22 @@ def main():
         p99 = _quick_p99_atoms_unstructured(source)
         print(f"[scan] p99 atoms/record = {p99}", flush=True)
 
-    n = encode_full(source, output, dim, k, p99, workers, hebbian)
+    if args.ensemble_seeds:
+        seeds = [int(s.strip()) for s in args.ensemble_seeds.split(",")
+                 if s.strip()]
+        if len(seeds) < 2:
+            print("ERROR: --ensemble-seeds needs at least 2 seeds; got "
+                  f"{seeds}. Drop the flag for single-seed encoding.",
+                  file=sys.stderr)
+            return 2
+        if len(set(seeds)) != len(seeds):
+            print(f"ERROR: duplicate seeds in {seeds}", file=sys.stderr)
+            return 2
+        n = encode_ensemble(source, output, dim, k, p99, workers, hebbian,
+                            lift_for_p99=args.lift_for_p99, seeds=seeds)
+    else:
+        n = encode_full(source, output, dim, k, p99, workers, hebbian,
+                        lift_for_p99=args.lift_for_p99)
 
     if discovery is not None:
         log_path = append_discovery(

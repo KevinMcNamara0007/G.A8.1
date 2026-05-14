@@ -120,6 +120,20 @@ def parse_args():
                    help="Ingest threads. 0 = resolve via A81_CPU_FRACTION.")
     p.add_argument("--force", action="store_true",
                    help="Wipe output dir before encoding.")
+    p.add_argument("--lift-for-p99", action="store_true",
+                   help="Per-corpus opt-in: derive max_slots as "
+                        "max(round(2·√k), p99_atoms) instead of the universal "
+                        "law default. SRO triples typically have p99=2 so the "
+                        "lift doesn't fire; this flag exists for symmetry with "
+                        "encode_unstructured.py.")
+    p.add_argument("--ensemble-seeds", default=None,
+                   help="Comma-separated codebook seeds for ensemble encoding "
+                        "(e.g. '42,56,64,96,104,116'). Encodes one pipeline "
+                        "per seed under structural_v13_seedN/, shares "
+                        "corpus.jsonl, writes ensemble.json. The decoder "
+                        "auto-detects ensemble.json and fans queries across "
+                        "all seeds, fusing via merge_top10. Spread seeds "
+                        "(non-consecutive) for the best Hit@1 lift.")
     # NOTE: SRO Tier-1 autotune uses unique-(s,r) self-identity as the
     # oracle today — already a real-task scoring path. --operator-queries
     # is exposed in encode_unstructured.py where it's load-bearing; here
@@ -498,6 +512,169 @@ def encode_full(source: Path, output: Path, dim: int, k: int,
     return n
 
 
+def encode_ensemble(source: Path, output: Path, dim: int, k: int,
+                     p99_atoms: Optional[int], workers: int,
+                     lift_for_p99: bool, seeds: List[int]):
+    """Ensemble encode for SRO triples: one source pass → N seeded pipes
+    + one shared C++ JsonlSidecarAppender.
+
+    Threading model:
+      main thread     — streams source, builds (tx, ix) batches + sidecar
+                        payload batches, hands each off via queues.
+      ingest_thread   — drains batch_q and fans each batch across ALL N
+                        pipes sequentially. ehc.ingest_batch_parallel
+                        releases the GIL and uses `workers` C++ threads
+                        internally; the per-pipe iteration in Python is
+                        serial, but the C++ side stays saturated.
+      sidecar_thread  — unchanged from encode_full. ONE shared
+                        JsonlSidecarAppender writes corpus.jsonl off-GIL.
+
+    Output layout matches encode_unstructured.encode_ensemble:
+        <output>/ensemble.json
+        <output>/corpus.jsonl
+        <output>/structural_v13_seed{N}/structural_v13.cfg, lsh.bin, hebbian.bin
+    """
+    output.mkdir(parents=True, exist_ok=True)
+    from encode._autotune import derive_k_constants
+    consts = derive_k_constants(k, p99_atoms=p99_atoms,
+                                 lift_for_p99=lift_for_p99)
+
+    pipes = []
+    pipe_dirs = []
+    for s in seeds:
+        pdir = output / f"structural_v13_seed{s}"
+        pdir.mkdir(parents=True, exist_ok=True)
+        cfg_ = build_sro_tier1_config(
+            dim=dim, k=k, max_slots=consts["max_slots"],
+            codebook_seed=int(s),
+        )
+        pipes.append(ehc.StructuralPipelineV13(cfg_))
+        pipe_dirs.append(pdir)
+
+    lift_tag = " lift_for_p99=ON" if lift_for_p99 else ""
+    p99_tag = f"p99={p99_atoms}" if p99_atoms is not None else "p99=(unscanned)"
+    print(f"[encode-ensemble] seeds={seeds}  D={dim}  k={k}  {p99_tag}  "
+          f"max_slots={consts['max_slots']}  "
+          f"salient_tokens={consts['salient_tokens']}  "
+          f"workers={workers}{lift_tag}", flush=True)
+
+    cpath = output / "corpus.jsonl"
+    t0 = time.perf_counter()
+    BATCH = 50_000
+
+    import queue, threading
+    appender = ehc.JsonlSidecarAppender(str(cpath))
+    sidecar_q: "queue.Queue" = queue.Queue(maxsize=4)
+    batch_q: "queue.Queue" = queue.Queue(maxsize=4)
+    writer_err: list = []
+    ingest_err: list = []
+
+    def _sidecar_writer():
+        try:
+            while True:
+                item = sidecar_q.get()
+                if item is None:
+                    appender.flush()
+                    appender.close()
+                    sidecar_q.task_done()
+                    return
+                doc_ids_b, subjects_b, relations_b, objects_b, extras_b = item
+                appender.append_sro_batch(
+                    doc_ids_b, subjects_b, relations_b, objects_b, extras_b)
+                sidecar_q.task_done()
+        except Exception as exc:
+            writer_err.append(exc)
+
+    def _ingest_worker():
+        try:
+            while True:
+                item = batch_q.get()
+                if item is None:
+                    batch_q.task_done()
+                    return
+                t_batch, i_batch = item
+                # Fan the batch across all N pipes. Each call releases the
+                # GIL and saturates `workers` C++ threads; iterating in
+                # Python is fine because Python is just dispatching.
+                for pipe in pipes:
+                    pipe.ingest_batch_parallel(t_batch, i_batch, workers)
+                batch_q.task_done()
+        except Exception as exc:
+            ingest_err.append(exc)
+
+    writer_thread = threading.Thread(target=_sidecar_writer, daemon=True)
+    ingest_thread = threading.Thread(target=_ingest_worker, daemon=True)
+    writer_thread.start()
+    ingest_thread.start()
+
+    tx, ix = [], []
+    doc_ids_b, subjects_b, relations_b, objects_b, extras_b = [], [], [], [], []
+    n = 0
+
+    try:
+        for s, r, o, raw_rec in _stream_triples(source):
+            sro_text = sro_tier1_encode_text(s, r)
+            tx.append(sro_text); ix.append(n)
+            doc_ids_b.append(n)
+            subjects_b.append(s); relations_b.append(r); objects_b.append(o)
+            extras = {k_: v for k_, v in raw_rec.items()
+                      if k_ not in ("subject", "relation", "object")}
+            if extras:
+                extras_b.append("," + json.dumps(extras, ensure_ascii=False)[1:-1])
+            else:
+                extras_b.append("")
+            n += 1
+            if len(tx) >= BATCH:
+                batch_q.put((tx, ix))
+                sidecar_q.put((doc_ids_b, subjects_b, relations_b, objects_b, extras_b))
+                tx, ix = [], []
+                doc_ids_b, subjects_b, relations_b, objects_b, extras_b = [], [], [], [], []
+                if n % 1_000_000 == 0:
+                    el = time.perf_counter() - t0
+                    print(f"[encode-ensemble]   queued {n:,} in {el:.1f}s "
+                          f"({n/el:,.0f}/s into {len(pipes)} pipes)", flush=True)
+        if tx:
+            batch_q.put((tx, ix))
+            sidecar_q.put((doc_ids_b, subjects_b, relations_b, objects_b, extras_b))
+    finally:
+        batch_q.put(None)
+        ingest_thread.join()
+        if ingest_err:
+            raise ingest_err[0]
+        sidecar_q.put(None)
+        writer_thread.join()
+        if writer_err:
+            raise writer_err[0]
+
+    el = time.perf_counter() - t0
+    print(f"[encode-ensemble] ingest done: {n:,} records × {len(pipes)} "
+          f"pipes in {el:.1f}s", flush=True)
+
+    for pipe, pdir in zip(pipes, pipe_dirs):
+        pipe.save(str(pdir))
+    print(f"[encode-ensemble] saved {len(pipes)} pipelines under {output}/",
+          flush=True)
+    print(f"[encode-ensemble] wrote sidecar → {cpath} ({n:,} rows)", flush=True)
+
+    manifest = {
+        "version": 1,
+        "encoder": "encode_triples",
+        "seeds": [int(s) for s in seeds],
+        "dim": int(dim),
+        "k": int(k),
+        "max_slots": int(consts["max_slots"]),
+        "salient_tokens": int(consts["salient_tokens"]),
+        "p99_atoms": (None if p99_atoms is None else int(p99_atoms)),
+        "lift_for_p99": bool(lift_for_p99),
+        "fusion": "merge_top10",
+        "n_records": int(n),
+    }
+    with open(output / "ensemble.json", "w") as mf:
+        json.dump(manifest, mf, indent=2)
+    print(f"[encode-ensemble] wrote {output}/ensemble.json", flush=True)
+    return n
+
+
 def main():
     args = parse_args()
     source = Path(args.source).resolve()
@@ -546,7 +723,21 @@ def main():
         p99 = _quick_p99_atoms_sro(source)
         print(f"[scan] p99 atoms/record = {p99}", flush=True)
 
-    n = encode_full(source, output, dim, k, p99, workers)
+    if args.ensemble_seeds:
+        seeds = [int(s.strip()) for s in args.ensemble_seeds.split(",")
+                 if s.strip()]
+        if len(seeds) < 2:
+            print("ERROR: --ensemble-seeds needs at least 2 seeds; got "
+                  f"{seeds}. Drop the flag for single-seed encoding.",
+                  file=sys.stderr)
+            return 2
+        if len(set(seeds)) != len(seeds):
+            print(f"ERROR: duplicate seeds in {seeds}", file=sys.stderr)
+            return 2
+        n = encode_ensemble(source, output, dim, k, p99, workers,
+                            lift_for_p99=args.lift_for_p99, seeds=seeds)
+    else:
+        n = encode_full(source, output, dim, k, p99, workers)
 
     # Append the discovery to the universal constants log so future
     # encodes can reason from precedent.
