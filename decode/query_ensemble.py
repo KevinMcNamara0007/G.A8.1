@@ -47,9 +47,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+
+def _utc_now_iso() -> str:
+    """Match decode.query's audit timestamp format (milliseconds, +00:00)."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 logger = logging.getLogger(__name__)
@@ -133,7 +140,11 @@ class EnsembleQueryService:
     and ``fusion`` (the active strategy name).
     """
 
-    def __init__(self, path: str, fusion: Optional[str] = None, **kwargs):
+    def __init__(self, path: str, fusion: Optional[str] = None,
+                 product_dir: Optional[str] = None,
+                 context: Optional[Dict[str, Any]] = None,
+                 hebbian_topk: int = 3,
+                 **kwargs):
         root = Path(path).resolve()
         manifest_path = root / "ensemble.json"
         if not manifest_path.exists():
@@ -165,7 +176,12 @@ class EnsembleQueryService:
                 raise FileNotFoundError(
                     f"ensemble.json lists seed={seed} but "
                     f"{pdir}/structural_v13.cfg is missing.")
-            self._backends.append(_FlatQS(a81_path=str(pdir)))
+            self._backends.append(_FlatQS(
+                a81_path=str(pdir),
+                product_dir=product_dir,
+                context=context,
+                hebbian_topk=hebbian_topk,
+            ))
 
         self._pool = ThreadPoolExecutor(
             max_workers=len(self._backends),
@@ -187,6 +203,7 @@ class EnsembleQueryService:
               **kwargs) -> Dict[str, Any]:
         """Fan out, fuse. Pass ``fusion=`` for a one-shot strategy
         override without changing the configured default."""
+        t0 = time.perf_counter()
         def _one(b):
             return b.query(text=text, k=k, **kwargs)
         futures = [self._pool.submit(_one, b) for b in self._backends]
@@ -199,11 +216,16 @@ class EnsembleQueryService:
         confidence = max(
             (float(r.get("confidence", 0.0)) for r in per_seed_full),
             default=0.0)
+        duration_ms = (time.perf_counter() - t0) * 1000.0
         return {
             "results": fused,
             "confidence": confidence,
             "audit": {
+                "timestamp": _utc_now_iso(),
+                "duration_ms": duration_ms,
                 "strategy": f"ensemble.{fusion or self._fusion_name}",
+                "n_retrieved": sum(len(p) for p in per_seed),
+                "n_returned": len(fused),
                 "n_backends": len(self._backends),
                 "seeds": list(self._seeds),
                 "per_seed_n_returned": [
@@ -235,3 +257,25 @@ class EnsembleQueryService:
                 except Exception:
                     pass
         self._pool.shutdown(wait=False)
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward unknown attributes to backend[0].
+
+        Methods that aren't ensembleable — vector-arithmetic
+        (``analogy``, ``what_if``, ``missing_link``), metadata lookups
+        (``get_metadata``), media-only paths (``query_images``,
+        ``query_multimodal``) — route to seed 0 with single-backend
+        semantics. Only ``query`` fans out + fuses.
+
+        Vector-arithmetic on a single seed is the right call:
+        analogy/what_if rely on token-codebook geometry that's tied to
+        a specific seed; ensembling them would mean ensembling vector
+        compositions across different codebook rotations, which is a
+        category error.
+        """
+        if name == "_backends":
+            raise AttributeError(name)
+        backends = self.__dict__.get("_backends")
+        if not backends:
+            raise AttributeError(name)
+        return getattr(backends[0], name)

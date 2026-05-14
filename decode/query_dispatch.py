@@ -159,3 +159,28 @@ class QueryService:
     def close(self):
         if hasattr(self._backend, "close"):
             self._backend.close()
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward unknown attributes/methods to the backend.
+
+        Lets callers reach backend-specific surface (``missing_link``,
+        ``analogy``, ``what_if``, ``query_images``, ``query_multimodal``,
+        ``get_metadata``, etc.) through the unified handle without each
+        new method requiring an explicit dispatcher proxy. Triggers only
+        when normal attribute lookup misses, so ``layout``, ``stats``,
+        ``backend``, ``query``, ``close`` (defined on the class) are
+        served from the dispatcher; everything else goes through.
+
+        For the ensemble layout, attribute forwarding hits
+        ``EnsembleQueryService.__getattr__``, which itself delegates to
+        seed 0 — single-backend semantics for vector-arithmetic and
+        metadata, ensembled retrieval only on ``query``.
+        """
+        # Avoid infinite recursion if _backend isn't set yet (e.g. during
+        # __init__ before the elif chain has assigned it).
+        if name == "_backend":
+            raise AttributeError(name)
+        backend = self.__dict__.get("_backend")
+        if backend is None:
+            raise AttributeError(name)
+        return getattr(backend, name)
