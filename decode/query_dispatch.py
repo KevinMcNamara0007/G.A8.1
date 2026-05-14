@@ -9,6 +9,10 @@ The canonical import for new G.A8.1 callers:
 Inspects the encoded directory at construction time and instantiates
 the matching backend:
 
+  - ensemble layout (ensemble.json + structural_v13_seedN/) → decode.query_ensemble.EnsembleQueryService
+                                                              (N codebook-seeded flat
+                                                              backends, query fan-out
+                                                              + result fusion)
   - flat layout    (structural_v13/ + corpus.jsonl)   → decode.query.QueryService
                                                          (legacy edge-shim wrapping
                                                          a single ehc.StructuralPipelineV13)
@@ -36,13 +40,18 @@ from typing import Any, Dict, Optional
 class QueryService:
     """Layout-agnostic query interface for G.A8.1 encoded corpora.
 
-    Public API (works on both backends):
-        qs = QueryService(path, dim=None, k=None)
+    Public API (works on all three backends):
+        qs = QueryService(path, dim=None, k=None, fusion=None)
         qs.query(text="", subject="", relation="", obj="", k=10, **kwargs)
         qs.stats   → dict
-        qs.layout  → "flat" or "sharded"
+        qs.layout  → "flat", "sharded", or "ensemble"
         qs.backend → underlying backend object for layout-specific features
         qs.close()
+
+    Ensemble-only kwargs:
+        fusion — "merge_top10" (default), "max_top1", or "sum_sim".
+                 Resolution order on the ensemble backend:
+                 kwarg > A81_ENSEMBLE_FUSION env > ensemble.json default.
     """
 
     def __init__(
@@ -56,10 +65,17 @@ class QueryService:
         if not p.exists():
             raise FileNotFoundError(f"path does not exist: {path}")
 
+        has_ensemble = (p / "ensemble.json").exists()
         has_shards = any(p.glob("shard_*"))
         has_flat = (p / "structural_v13").exists()
 
-        if has_shards:
+        if has_ensemble:
+            # Ensemble layout (encode_unstructured --ensemble-seeds output).
+            from decode.query_ensemble import EnsembleQueryService
+            self._backend = EnsembleQueryService(
+                str(p), fusion=kwargs.pop("fusion", None))
+            self.layout = "ensemble"
+        elif has_shards:
             # Sharded layout (encode.py output).
             from decode13 import QueryServiceV13
             self._backend = QueryServiceV13(str(p), dim=dim, k=k)
@@ -80,11 +96,13 @@ class QueryService:
             raise ValueError(
                 f"{path} is not a recognized G.A8.1 encoded directory.\n"
                 f"  Expected one of:\n"
-                f"    sharded layout — contains shard_NNNN/ subfolders + manifest.json\n"
-                f"                     (built by `python -m encode.encode`)\n"
-                f"    flat layout    — contains structural_v13/ + corpus.jsonl\n"
-                f"                     (built by `python -m encode.encode_triples`\n"
-                f"                      or `python -m encode.encode_unstructured`)"
+                f"    ensemble layout — contains ensemble.json + structural_v13_seedN/ dirs\n"
+                f"                      (built by `encode_unstructured --ensemble-seeds N,M,...`)\n"
+                f"    sharded layout  — contains shard_NNNN/ subfolders + manifest.json\n"
+                f"                      (built by `python -m encode.encode`)\n"
+                f"    flat layout     — contains structural_v13/ + corpus.jsonl\n"
+                f"                      (built by `python -m encode.encode_triples`\n"
+                f"                       or `python -m encode.encode_unstructured`)"
             )
 
     def query(
