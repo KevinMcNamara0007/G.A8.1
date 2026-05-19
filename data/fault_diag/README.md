@@ -10,8 +10,10 @@ technician resolution logs.
 | file | purpose |
 |---|---|
 | `hooks.py` | Product hooks. Provides `query_cleaner(text)` that maps free-form NL ("the cooling system is broken") to canonical `subject relation` form, and `get_hooks(index_dir=None)` for `load_hooks(product_dir=...)` auto-discovery. Lazy-imports `HookSet` / `CleanedQuery` so the file is standalone-safe when the edge `hooks` module isn't on path. |
-| `regression_probes.py` | Deterministic probe — emits sha256-truncated digest of 13 canonical queries. Pinned at `14f142473860f2e7`; exits non-zero on drift. Run after any change that could affect retrieval. |
+| `regression_probes.py` | Deterministic probe — emits sha256-truncated digest of 13 canonical queries. Pinned at `14f142473860f2e7`; exits non-zero on drift. The digest tests *behavior* (canonical query → fix mapping), so it survives encoder-geometry changes as long as retrieval results are stable. Run after any change that could affect retrieval. |
 | `probe.py` | Demo: 5-query NL → retrieval walk-through. Not used in CI. |
+| `generate_hefty.py` | Synthesizes 100K events / ~518K SRO triples for scale testing. Adds machine-model variety + codes outside the lexical catalog. Streams direct to JSONL — no intermediate event files. |
+| `bench_hefty.py` | Fault-flow bench: fix-correctness@1, top-k fleet diversity, NL routing via hooks, cold-start sim, p50/p95/p99 latency. Takes optional index path arg. |
 
 ## What's NOT in here (regenerable, kept locally only)
 
@@ -32,13 +34,13 @@ technician resolution logs.
    (2026-05-19 entry).
 4. Emit `hyd_triples.jsonl` — 5 SRO triples per event (`resolved_by`,
    `requires_part`, `occurs_on`, `reported`, `co_occurs_with`).
-5. Encode:
+5. Encode (canonical `k = ceil(sqrt(D))`):
    ```bash
    PYTHONPATH=/opt/EHC/install/linux-x86_64:/opt/G.A8.1 \
      python3 -m encode.encode_triples \
        --source /opt/G.A8.1/data/fault_diag/hyd_triples.jsonl \
        --output /opt/G.A8.1/data/fault_diag/encoded_hyd_d512 \
-       --dim 512 --k 64 --no-autotune --force
+       --dim 512 --k 23 --no-autotune --force
    ```
 6. Verify:
    ```bash
