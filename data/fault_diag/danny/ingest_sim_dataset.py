@@ -29,8 +29,32 @@ FEATURE_COLS = [
     'shoulderYaw_q_range',  'shoulderYaw_qd_zcross',  'shoulderYaw_tau_maxabs',
     'elbowPitch_q_range',   'elbowPitch_qd_zcross',   'elbowPitch_tau_maxabs',
 ]
-METADATA_COLS = ['robot_model','injected_fault','severity','affected_joint',
-                 'start_ts','duration_s']
+REQUIRED_COLS = ['run_id','robot_model','injected_fault','severity',
+                 'affected_joint','start_ts','duration_s']
+METADATA_COLS = REQUIRED_COLS[1:]  # robot_model and downstream — run_id is the key
+
+
+class IngestError(Exception):
+    """Raised on schema validation failure. Message is end-user-facing."""
+
+
+def validate_rows(rows):
+    if not rows:
+        raise IngestError(
+            "CSV has no data rows. Need at least one row matching the SPEC.md schema."
+        )
+    missing_required = [c for c in REQUIRED_COLS if c not in rows[0]]
+    if missing_required:
+        raise IngestError(
+            f"CSV is missing required column(s): {missing_required}. "
+            f"See SPEC.md for the full schema. Got columns: {list(rows[0].keys())}"
+        )
+    missing_features = [c for c in FEATURE_COLS if c not in rows[0]]
+    if missing_features:
+        raise IngestError(
+            f"CSV is missing feature column(s): {missing_features}. "
+            f"All 12 per-joint feature columns are required for quantization."
+        )
 
 
 # ─── feature quantization ────────────────────────────────────────────
@@ -58,15 +82,18 @@ def emit_triples(rows, token_for, out_path):
             joint  = r['affected_joint']
             sev    = r['severity']
 
-            # Metadata bundle attached to every triple from this row
-            meta = {
-                'run_id': run_id, 'robot_model': model, 'injected_fault': fault,
-                'severity': sev, 'affected_joint': joint,
-                'start_ts': r['start_ts'], 'duration_s': float(r['duration_s']),
-            }
-            # Carry the raw aggregates too so a reranker can use them
-            for fc in FEATURE_COLS:
-                meta[fc] = float(r[fc])
+            # Metadata bundle attached to every triple from this row.
+            # Strategy: pass through ALL CSV columns, parsing known numerics.
+            # Required-cols and features get typed; unknown columns become
+            # string metadata Danny can use for reranking / display.
+            meta = {}
+            for col, val in r.items():
+                if col in FEATURE_COLS:
+                    meta[col] = float(val) if val != '' else None
+                elif col == 'duration_s':
+                    meta[col] = float(val) if val != '' else None
+                else:
+                    meta[col] = val
 
             # 1) Canonical fault → run (the dominant retrieval key)
             f.write(json.dumps({**meta, 'subject': fault,
@@ -180,6 +207,12 @@ def main():
     with open(CSV_IN) as f:
         rows = list(csv.DictReader(f))
     print(f"[read]   {len(rows)} sim runs from {CSV_IN}")
+
+    try:
+        validate_rows(rows)
+    except IngestError as e:
+        print(f"\n[error] {e}")
+        sys.exit(2)
 
     # Show class balance — confirm the CSV looks sane
     print(f"[counts] {Counter(r['injected_fault'] for r in rows)}")
