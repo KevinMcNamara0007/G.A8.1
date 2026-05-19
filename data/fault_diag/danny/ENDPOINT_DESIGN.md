@@ -79,33 +79,35 @@ GET  /v1/sim_runs/health
                 └───────────────────────────────────────────┘
 ```
 
-## Open questions (need decisions before coding)
+## Decisions (locked in for v1, 2026-05-19)
 
-1. **Auth header.** Existing routes use `X-API-Key`. You picked "bearer" in
-   the earlier prompt. Options:
-     a. Keep `X-API-Key` for the new routes (consistency, no middleware change).
-     b. Add bearer support across the service (touches `auth.cpp`).
-     c. Bearer just for `/v1/sim_runs/*`, X-API-Key on the rest. Inconsistent
-        but isolates the change.
-   Recommend (a) for v1.
+1. **Auth header — `X-API-Key`.** Same as every other ehc_rest route. No
+   middleware change. Revisit if/when we add bearer service-wide.
 
-2. **Shard lifecycle.** What happens when Danny posts a second CSV?
-     a. Append to existing shard (incremental ingest — `StructuralPipelineV13`
-        supports it, but corpus.jsonl needs careful append).
-     b. New shard per request; query route picks the latest. Simpler.
-     c. Named shards: Danny passes `?shard=danny_2026_05_19` and queries
-        target a specific one. Most flexible.
-   Recommend (b) for v1, (c) later.
+2. **Shard lifecycle — new shard per request; query route picks the latest.**
+   Each POST creates a fresh shard dir (timestamped). Query route resolves
+   to the most-recent shard. Trade-off accepted: prior shards drop out of
+   the query view; add `?shard=` naming later if Danny asks to keep history.
+   Append-mode rejected because of BUG-G81-05 (tier-routed-vs-flat layout
+   caveats in `IncrementalIngest`).
 
-3. **Encoder geometry.** Hardcode D=512, k=23 (canonical) or accept as
-   query params?
-   Recommend hardcode for v1; expose later if Danny needs to experiment.
+3. **Encoder geometry — hardcoded D=512, k=23.** Canonical SRO geometry
+   per `progress.txt` ENCODER SELECTION; D=128/256 excluded by the
+   enterprise-minimum rule, k pinned to `ceil(sqrt(D))` to avoid the
+   D=512/k=64 footgun we hit on the hyd shard. Expose `?dim=`/`?k=` later
+   only if Danny needs to experiment.
 
-4. **Ingest concurrency.** Two simultaneous ingests on the same shard would
-   race. A simple per-shard `std::mutex` (already in `StructuralPipelineV13`)
-   handles this, but if ingest takes minutes the second request would block.
-   For v1 the dataset is small (~190 rows → <1s encode), so this is fine.
-   At customer scale we'd want async accept + status polling.
+4. **Ingest concurrency — per-shard `std::mutex`; second request blocks.**
+   `StructuralPipelineV13` already has the internal lock. v1 dataset
+   (~190 rows → <1s encode) makes blocking invisible. If Danny's real
+   batches go to 100k+ rows, revisit with async accept + 202 +
+   `/v1/sim_runs/jobs/{id}` polling.
+
+Two assumptions to revisit when Danny posts real data:
+- Q2 assumes he treats each MATLAB batch as a *replacement* corpus, not
+  accumulate. If accumulate is the real workflow, switch to (c) named shards.
+- Q4 assumes batches are small (sample is 190 rows). If real batches are
+  much larger, switch to (b) async ingest.
 
 ## Risks
 

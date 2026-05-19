@@ -151,6 +151,7 @@ def encode_shard(triples_path, out_dir):
 # ─── demo queries ────────────────────────────────────────────────────
 def demo_queries(out_dir):
     sys.path.insert(0, '/opt/G.A8.1')
+    sys.path.insert(0, '/opt/EHC/install/linux-x86_64')
     from decode.query import QueryService
     svc = QueryService(str(out_dir))
     print(f"  {svc.stats}\n")
@@ -204,7 +205,7 @@ def demo_queries(out_dir):
 
 # ─── main ────────────────────────────────────────────────────────────
 def main():
-    with open(CSV_IN) as f:
+    with open(CSV_IN, newline='') as f:
         rows = list(csv.DictReader(f))
     print(f"[read]   {len(rows)} sim runs from {CSV_IN}")
 
